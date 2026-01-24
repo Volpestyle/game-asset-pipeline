@@ -56,13 +56,13 @@
 │                          EXTERNAL AI PROVIDERS                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  ┌──────────────────┐              ┌──────────────────┐                    │
-│  │    Replicate     │              │      Fal.ai      │                    │
-│  │                  │              │                  │                    │
-│  │ - IP-Adapter     │              │ - Fast inference │                    │
-│  │ - AnimateDiff    │              │ - img2img        │                    │
-│  │ - SDXL img2img   │              │                  │                    │
-│  └──────────────────┘              └──────────────────┘                    │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐        │
+│  │    Replicate     │  │      Fal.ai      │  │      Gemini      │        │
+│  │                  │  │                  │  │                  │        │
+│  │ - IP-Adapter     │  │ - Fast inference │  │ - Image analysis │        │
+│  │ - AnimateDiff    │  │ - img2img        │  │ - Style detection│        │
+│  │ - SDXL img2img   │  │                  │  │ - Understanding  │        │
+│  └──────────────────┘  └──────────────────┘  └──────────────────┘        │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -203,6 +203,12 @@ storage/
 ### Fallback: Fal.ai
 - Similar capabilities, different infrastructure
 - Good for A/B testing quality
+
+### Analysis: Gemini API
+- Image understanding and description
+- Automatic style detection from references
+- Character feature extraction for prompts
+- Can analyze uploaded refs to suggest optimal generation params
 
 ### Generation Pipeline
 

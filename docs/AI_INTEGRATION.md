@@ -12,6 +12,55 @@ The core technical challenge is maintaining character visual identity across gen
 
 IP-Adapter allows us to condition image generation on reference images, essentially telling the AI "generate an image that looks like THIS character."
 
+## AI Providers Overview
+
+| Provider | Role | Use Case |
+|----------|------|----------|
+| Replicate | Primary generation | Frame generation, video-to-frames, IP-Adapter |
+| Fal.ai | Secondary/fallback | Fast inference, A/B testing |
+| Gemini | Analysis | Image understanding, style detection, prompt optimization |
+
+## Gemini API (Analysis & Understanding)
+
+**Purpose**: Analyze uploaded references to extract character details, detect art style, and optimize generation prompts.
+
+**Usage**:
+```typescript
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+
+export async function analyzeCharacterReference(imageUrl: string) {
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+  const result = await model.generateContent([
+    {
+      inlineData: {
+        mimeType: "image/png",
+        data: await fetchImageAsBase64(imageUrl),
+      },
+    },
+    `Analyze this character reference image and extract:
+    1. Art style (pixel art, anime, hand-drawn, 3D rendered, etc.)
+    2. Key visual features (colors, proportions, distinctive elements)
+    3. Suggested prompt keywords for consistent generation
+    4. Any notable accessories or details to preserve
+
+    Return as JSON.`,
+  ]);
+
+  return JSON.parse(result.response.text());
+}
+```
+
+**Use Cases**:
+- Auto-detect art style from uploaded refs
+- Extract character description for generation prompts
+- Suggest optimal generation parameters
+- Validate consistency between multiple reference images
+
+---
+
 ## Replicate Models
 
 ### 1. IP-Adapter (Character Consistency)

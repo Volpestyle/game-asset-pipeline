@@ -51,6 +51,7 @@ Upload character reference images → Define animation parameters → Generate c
 - **AI Backend**:
   - Primary: Replicate (AnimateDiff, IP-Adapter, img2img models)
   - Secondary: Fal.ai
+  - Analysis: Gemini API (image understanding, style detection)
 - **Storage**: Local filesystem (MVP), S3-compatible (future)
 
 ## Project Structure
@@ -97,13 +98,14 @@ npm run dev
 ```
 REPLICATE_API_TOKEN=       # Replicate API token
 FAL_KEY=                   # Fal.ai API key (optional)
+GOOGLE_AI_API_KEY=         # Gemini API key (optional, for image analysis)
 ```
 
 ## Roadmap
 
 ### Phase 1: Foundation (Current)
 - [x] Project setup and documentation
-- [ ] Character upload and management UI
+- [x] Character upload and management UI
 - [ ] Basic character identity storage
 
 ### Phase 2: Animation Editor
