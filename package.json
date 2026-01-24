@@ -1,0 +1,26 @@
+{
+  "name": "sprite-pipeline-monorepo",
+  "private": true,
+  "packageManager": "pnpm@9.15.2",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "dev:kill": "node scripts/dev-kill.mjs",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "format": "prettier -w .",
+    "typecheck": "turbo typecheck",
+    "db:generate": "pnpm --filter @repo/db db:generate",
+    "db:migrate": "pnpm --filter @repo/db db:migrate",
+    "db:studio": "pnpm --filter @repo/db db:studio"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "prettier": "^3.2.5",
+    "turbo": "^2.3.3",
+    "typescript": "^5.6.3"
+  }
+}
