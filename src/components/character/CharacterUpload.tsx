@@ -3,28 +3,29 @@
 import { useState, useCallback } from "react";
 import { ReferenceImage, ReferenceImageType, ArtStyle } from "@/types";
 import { cn } from "@/lib/utils";
+import { CloudUpload, Plus } from "iconoir-react";
 
 interface CharacterUploadProps {
   onImagesChange?: (images: ReferenceImage[]) => void;
   onStyleChange?: (style: ArtStyle) => void;
 }
 
-const IMAGE_TYPES: { value: ReferenceImageType; label: string }[] = [
-  { value: "front", label: "Front" },
-  { value: "side", label: "Side" },
-  { value: "back", label: "Back" },
-  { value: "detail", label: "Detail" },
-  { value: "action", label: "Action" },
-  { value: "other", label: "Other" },
+const IMAGE_TYPES: { value: ReferenceImageType; label: string; code: string }[] = [
+  { value: "front", label: "Front View", code: "FNT" },
+  { value: "side", label: "Side View", code: "SDE" },
+  { value: "back", label: "Back View", code: "BCK" },
+  { value: "detail", label: "Detail", code: "DTL" },
+  { value: "action", label: "Action Pose", code: "ACT" },
+  { value: "other", label: "Other", code: "OTH" },
 ];
 
-const ART_STYLES: { value: ArtStyle; label: string; description: string }[] = [
-  { value: "pixel-art", label: "Pixel Art", description: "Retro game aesthetics" },
-  { value: "hand-drawn", label: "Hand Drawn", description: "Illustrated style" },
-  { value: "anime", label: "Anime", description: "Japanese animation" },
-  { value: "3d-rendered", label: "3D Rendered", description: "Pre-rendered 3D" },
-  { value: "realistic", label: "Realistic", description: "Photorealistic" },
-  { value: "custom", label: "Custom", description: "Define your own" },
+const ART_STYLES: { value: ArtStyle; label: string; code: string }[] = [
+  { value: "pixel-art", label: "Pixel Art", code: "PXL" },
+  { value: "hand-drawn", label: "Hand Drawn", code: "HDR" },
+  { value: "anime", label: "Anime", code: "ANM" },
+  { value: "3d-rendered", label: "3D Rendered", code: "3DR" },
+  { value: "realistic", label: "Realistic", code: "RLS" },
+  { value: "custom", label: "Custom", code: "CST" },
 ];
 
 export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUploadProps) {
@@ -85,7 +86,6 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
 
   const removeImage = (id: string) => {
     const updated = images.filter((img) => img.id !== id);
-    // If we removed the primary, make the first one primary
     if (updated.length > 0 && !updated.some((img) => img.isPrimary)) {
       updated[0].isPrimary = true;
     }
@@ -100,10 +100,25 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
 
   return (
     <div className="space-y-8">
+      {/* Section Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-xs text-muted-foreground tracking-widest mb-1">
+            REFERENCE_INPUT
+          </p>
+          <p className="text-sm font-medium">IMAGE_DATA</p>
+        </div>
+        {images.length > 0 && (
+          <div className="text-xs text-muted-foreground">
+            <span className="text-primary metric-value">{images.length}</span> LOADED
+          </div>
+        )}
+      </div>
+
       {/* Drop Zone */}
       <div
         className={cn(
-          "drop-zone rounded-lg p-8 text-center cursor-pointer transition-all duration-200",
+          "drop-zone p-8 cursor-pointer transition-all duration-150",
           isDragOver && "drag-over"
         )}
         onDrop={handleDrop}
@@ -120,35 +135,22 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
           onChange={(e) => handleFiles(e.target.files)}
         />
 
-        <div className="space-y-4">
-          {/* Icon */}
-          <div className="mx-auto w-16 h-16 rounded-full bg-secondary flex items-center justify-center">
-            <svg
-              className="w-8 h-8 text-gold"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-              />
-            </svg>
+        <div className="text-center space-y-4">
+          <div className="w-12 h-12 mx-auto border border-border flex items-center justify-center">
+            <CloudUpload className="w-6 h-6 text-primary" strokeWidth={1.5} />
           </div>
 
-          <div>
-            <p className="text-lg font-medium text-foreground">
-              Drop character references here
+          <div className="space-y-1">
+            <p className="text-sm text-foreground">
+              DROP_FILES_HERE
             </p>
-            <p className="text-sm text-muted-foreground mt-1">
-              or click to browse
+            <p className="text-xs text-muted-foreground">
+              or click to browse filesystem
             </p>
           </div>
 
-          <p className="text-xs text-muted-foreground/70">
-            PNG, JPG, WebP up to 10MB each
+          <p className="text-[10px] text-muted-foreground/60 tracking-wider">
+            FORMATS: PNG, JPG, WEBP | MAX: 10MB/FILE
           </p>
         </div>
       </div>
@@ -156,109 +158,98 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
       {/* Uploaded Images Grid */}
       {images.length > 0 && (
         <div className="space-y-4 animate-fade-in">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium text-foreground uppercase tracking-wider">
-              Reference Images
-            </h3>
-            <span className="text-xs text-muted-foreground font-mono">
-              {images.length} uploaded
-            </span>
-          </div>
+          <div className="ascii-divider">LOADED_REFERENCES</div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 stagger-children">
-            {images.map((image) => (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 stagger-children">
+            {images.map((image, index) => (
               <div
                 key={image.id}
                 className={cn(
-                  "group relative aspect-square rounded-lg overflow-hidden bg-card border transition-all duration-200",
+                  "group relative aspect-square tech-border overflow-hidden transition-all duration-150",
                   image.isPrimary
-                    ? "border-gold ring-1 ring-gold/30 glow-gold-subtle"
-                    : "border-border hover:border-muted-foreground/30"
+                    ? "border-primary crt-glow-box"
+                    : "hover:border-primary/50"
                 )}
               >
-                {/* Image */}
-                <img
-                  src={image.url}
-                  alt="Reference"
-                  className="w-full h-full object-cover"
-                />
+                {/* Index Badge */}
+                <div className="absolute top-0 left-0 z-10 bg-card/90 px-2 py-1 text-[10px] text-muted-foreground border-r border-b border-border">
+                  {String(index).padStart(2, "0")}
+                </div>
 
                 {/* Primary Badge */}
                 {image.isPrimary && (
-                  <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-gold text-primary-foreground text-xs font-medium">
-                    Primary
+                  <div className="absolute top-0 right-0 z-10 bg-primary px-2 py-1 text-[10px] text-primary-foreground">
+                    PRI
                   </div>
                 )}
 
+                {/* Image */}
+                <img
+                  src={image.url}
+                  alt={`Reference ${index}`}
+                  className="w-full h-full object-cover"
+                />
+
                 {/* Overlay Controls */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                  <div className="absolute bottom-0 left-0 right-0 p-3 space-y-2">
-                    {/* Type Selector */}
+                <div className="absolute inset-0 bg-background/90 opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex flex-col">
+                  {/* Type Selector */}
+                  <div className="p-2 border-b border-border">
                     <select
                       value={image.type}
                       onChange={(e) =>
                         updateImageType(image.id, e.target.value as ReferenceImageType)
                       }
-                      className="w-full text-xs bg-black/50 border border-white/20 rounded px-2 py-1 text-white backdrop-blur-sm"
+                      className="w-full text-xs bg-card border border-border px-2 py-1.5 text-foreground"
                       onClick={(e) => e.stopPropagation()}
                     >
                       {IMAGE_TYPES.map((type) => (
                         <option key={type.value} value={type.value}>
-                          {type.label}
+                          [{type.code}] {type.label}
                         </option>
                       ))}
                     </select>
+                  </div>
 
-                    {/* Actions */}
-                    <div className="flex gap-2">
-                      {!image.isPrimary && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setPrimaryImage(image.id);
-                          }}
-                          className="flex-1 text-xs bg-white/10 hover:bg-white/20 border border-white/20 rounded px-2 py-1 text-white transition-colors"
-                        >
-                          Set Primary
-                        </button>
-                      )}
+                  {/* Actions */}
+                  <div className="flex-1 flex flex-col justify-end p-2 space-y-1">
+                    {!image.isPrimary && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          removeImage(image.id);
+                          setPrimaryImage(image.id);
                         }}
-                        className="text-xs bg-red-500/20 hover:bg-red-500/40 border border-red-500/30 rounded px-2 py-1 text-red-300 transition-colors"
+                        className="w-full text-xs bg-card border border-border hover:border-primary hover:text-primary px-2 py-1.5 transition-colors"
                       >
-                        Remove
+                        [SET_PRIMARY]
                       </button>
-                    </div>
+                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeImage(image.id);
+                      }}
+                      className="w-full text-xs bg-card border border-destructive/50 text-destructive hover:bg-destructive/10 px-2 py-1.5 transition-colors"
+                    >
+                      [REMOVE]
+                    </button>
                   </div>
+                </div>
+
+                {/* Type Label */}
+                <div className="absolute bottom-0 left-0 right-0 bg-card/90 px-2 py-1 text-[10px] text-muted-foreground border-t border-border">
+                  {IMAGE_TYPES.find(t => t.value === image.type)?.code || "OTH"}
                 </div>
               </div>
             ))}
 
             {/* Add More Card */}
             <div
-              className="aspect-square rounded-lg border-2 border-dashed border-border hover:border-muted-foreground/50 flex items-center justify-center cursor-pointer transition-colors"
+              className="aspect-square tech-border border-dashed flex items-center justify-center cursor-pointer hover:border-primary/50 transition-colors"
               onClick={() => document.getElementById("file-input")?.click()}
             >
               <div className="text-center">
-                <svg
-                  className="w-8 h-8 text-muted-foreground mx-auto"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M12 4v16m8-8H4"
-                  />
-                </svg>
-                <span className="text-xs text-muted-foreground mt-2 block">
-                  Add more
-                </span>
+                <Plus className="w-6 h-6 text-muted-foreground mx-auto" strokeWidth={1.5} />
+                <p className="text-[10px] text-muted-foreground mt-2">ADD_MORE</p>
               </div>
             </div>
           </div>
@@ -268,9 +259,12 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
       {/* Art Style Selection */}
       {images.length > 0 && (
         <div className="space-y-4 animate-slide-up">
-          <h3 className="text-sm font-medium text-foreground uppercase tracking-wider">
-            Art Style
-          </h3>
+          <div>
+            <p className="text-xs text-muted-foreground tracking-widest mb-1">
+              RENDER_MODE
+            </p>
+            <p className="text-sm font-medium">ART_STYLE</p>
+          </div>
 
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {ART_STYLES.map((style) => (
@@ -278,23 +272,34 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
                 key={style.value}
                 onClick={() => handleStyleSelect(style.value)}
                 className={cn(
-                  "p-4 rounded-lg border text-left transition-all duration-200",
+                  "tech-border p-4 text-left transition-all duration-150",
                   selectedStyle === style.value
-                    ? "border-gold bg-gold/10 glow-gold-subtle"
-                    : "border-border bg-card hover:border-muted-foreground/30 hover:bg-secondary"
+                    ? "border-primary bg-primary/5 crt-glow-box"
+                    : "hover:border-primary/50"
                 )}
               >
-                <p
-                  className={cn(
-                    "font-medium",
-                    selectedStyle === style.value ? "text-gold" : "text-foreground"
-                  )}
-                >
-                  {style.label}
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {style.description}
-                </p>
+                <div className="flex items-center justify-between mb-2">
+                  <span className={cn(
+                    "text-xs font-medium",
+                    selectedStyle === style.value ? "text-primary" : "text-foreground"
+                  )}>
+                    {style.label}
+                  </span>
+                  <span className={cn(
+                    "text-[10px] px-1.5 py-0.5 border",
+                    selectedStyle === style.value
+                      ? "border-primary text-primary"
+                      : "border-border text-muted-foreground"
+                  )}>
+                    {style.code}
+                  </span>
+                </div>
+                <div className={cn(
+                  "h-1 w-full",
+                  selectedStyle === style.value
+                    ? "bg-primary"
+                    : "bg-border"
+                )} />
               </button>
             ))}
           </div>

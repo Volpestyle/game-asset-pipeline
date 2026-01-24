@@ -3,10 +3,9 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { CharacterUpload } from "@/components/character/CharacterUpload";
 import { ReferenceImage, ArtStyle } from "@/types";
+import { NavArrowLeft, Check } from "iconoir-react";
 
 export default function NewCharacterPage() {
   const [name, setName] = useState("");
@@ -22,128 +21,232 @@ export default function NewCharacterPage() {
     setIsCreating(true);
 
     // TODO: Implement actual character creation
-    // For now, simulate a delay
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    // Redirect to character page or animations
     setIsCreating(false);
   };
 
   return (
-    <div className="min-h-screen">
-      {/* Header */}
-      <header className="border-b border-border bg-background/80 backdrop-blur-xl sticky top-0 z-50">
-        <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+    <div className="min-h-screen grid-bg">
+      {/* Top Status Bar */}
+      <header className="fixed top-0 left-0 right-0 z-50 border-b border-border bg-background/95 backdrop-blur-sm">
+        <div className="h-10 px-4 flex items-center justify-between text-xs">
           <div className="flex items-center gap-4">
             <Link
               href="/"
-              className="text-muted-foreground hover:text-foreground transition-colors"
+              className="text-muted-foreground hover:text-primary transition-colors flex items-center gap-2"
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-              </svg>
+              <NavArrowLeft className="w-4 h-4" strokeWidth={1.5} />
+              <span>[BACK]</span>
             </Link>
-            <div className="w-px h-5 bg-border" />
-            <h1 className="font-semibold">New Character</h1>
+            <div className="w-px h-4 bg-border" />
+            <div className="flex items-center gap-2">
+              <span className="text-primary">/characters/new</span>
+            </div>
           </div>
 
-          <Button
-            onClick={handleCreate}
-            disabled={!canCreate || isCreating}
-            className="bg-gold hover:bg-gold/90 text-primary-foreground disabled:opacity-50"
-          >
-            {isCreating ? (
-              <span className="flex items-center gap-2">
-                <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                Creating...
-              </span>
-            ) : (
-              "Create Character"
-            )}
-          </Button>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground">MODE:</span>
+              <span className="text-primary">CREATE</span>
+            </div>
+            <div className="w-px h-4 bg-border" />
+            <Button
+              onClick={handleCreate}
+              disabled={!canCreate || isCreating}
+              className="bg-primary hover:bg-primary/80 text-primary-foreground h-7 px-3 text-xs tracking-wider disabled:opacity-40"
+            >
+              {isCreating ? (
+                <span className="flex items-center gap-2">
+                  <span className="w-3 h-3 border border-primary-foreground border-t-transparent animate-spin" />
+                  PROCESSING...
+                </span>
+              ) : (
+                "[EXECUTE]"
+              )}
+            </Button>
+          </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-5xl mx-auto px-6 py-12">
-        <div className="space-y-12">
-          {/* Intro */}
-          <div className="max-w-2xl space-y-4">
-            <h2 className="text-3xl font-bold">Create a character identity</h2>
-            <p className="text-muted-foreground">
-              Upload reference images of your character. The AI will extract their visual identity
-              to ensure consistent animation frames.
-            </p>
-          </div>
+      <main className="pt-14 pb-12 px-4">
+        <div className="max-w-5xl mx-auto">
+          {/* Page Header */}
+          <section className="py-8 border-b border-border">
+            <div className="flex items-start justify-between">
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground tracking-widest">
+                  CHARACTER_CREATION_MODULE
+                </p>
+                <h1 className="text-2xl font-bold tracking-tight">
+                  NEW_<span className="text-primary crt-glow">CHARACTER</span>
+                </h1>
+                <p className="text-sm text-muted-foreground max-w-lg">
+                  Input reference images for identity extraction. System will analyze visual data
+                  and lock character parameters for consistent frame generation.
+                </p>
+              </div>
 
-          {/* Character Name */}
-          <div className="max-w-md space-y-3">
-            <Label htmlFor="name" className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
-              Character Name
-            </Label>
-            <Input
-              id="name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., Knight, Wizard, Hero..."
-              className="h-12 bg-card border-border focus:border-gold focus:ring-gold/20"
-            />
-          </div>
-
-          {/* Upload Section */}
-          <CharacterUpload
-            onImagesChange={setImages}
-            onStyleChange={setStyle}
-          />
-
-          {/* Summary / Next Steps */}
-          {canCreate && (
-            <div className="p-6 rounded-xl bg-card border border-gold/30 glow-gold-subtle animate-slide-up">
-              <div className="flex items-start gap-4">
-                <div className="w-10 h-10 rounded-lg bg-gold/10 border border-gold/20 flex items-center justify-center flex-shrink-0">
-                  <svg className="w-5 h-5 text-gold" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <div className="space-y-1">
-                  <h3 className="font-semibold text-gold">Ready to create</h3>
-                  <p className="text-sm text-muted-foreground">
-                    <span className="text-foreground font-medium">{name}</span> with{" "}
-                    <span className="text-foreground font-medium">{images.length} reference{images.length !== 1 ? "s" : ""}</span> in{" "}
-                    <span className="text-foreground font-medium">{style?.replace("-", " ")}</span> style.
-                    Click &quot;Create Character&quot; to continue to animation setup.
-                  </p>
+              {/* Status Panel */}
+              <div className="tech-border bg-card p-3 text-xs min-w-[180px]">
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">NAME</span>
+                    <span className={name ? "text-success" : "text-warning"}>
+                      {name ? "SET" : "REQUIRED"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">REFS</span>
+                    <span className={images.length > 0 ? "text-success" : "text-warning"}>
+                      {images.length > 0 ? `${images.length}_LOADED` : "REQUIRED"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">STYLE</span>
+                    <span className={style ? "text-success" : "text-warning"}>
+                      {style ? style.toUpperCase().replace("-", "_") : "REQUIRED"}
+                    </span>
+                  </div>
+                  <div className="border-t border-border pt-2 mt-2">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">STATUS</span>
+                      <span className={canCreate ? "text-success" : "text-warning"}>
+                        {canCreate ? "READY" : "INCOMPLETE"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
+          </section>
+
+          {/* Character Name Input */}
+          <section className="py-6 border-b border-border">
+            <div className="grid lg:grid-cols-[200px,1fr] gap-6 items-start">
+              <div>
+                <p className="text-xs text-muted-foreground tracking-widest mb-1">
+                  IDENTIFIER
+                </p>
+                <p className="text-sm font-medium">CHARACTER_NAME</p>
+              </div>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-primary text-sm">
+                  {">"}
+                </span>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Enter identifier..."
+                  className="terminal-input w-full h-10 pl-7 pr-4 text-sm bg-card placeholder:text-muted-foreground/50"
+                />
+                <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <span className="text-primary animate-blink">_</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Upload Section */}
+          <section className="py-6">
+            <CharacterUpload
+              onImagesChange={setImages}
+              onStyleChange={setStyle}
+            />
+          </section>
+
+          {/* Ready State */}
+          {canCreate && (
+            <section className="py-6 border-t border-border animate-slide-up">
+              <div className="tech-border corner-brackets bg-card p-6 crt-glow-box">
+                <div className="flex items-start gap-4">
+                  <div className="w-10 h-10 border border-primary bg-primary/10 flex items-center justify-center flex-shrink-0">
+                    <Check className="w-5 h-5 text-primary" strokeWidth={2} />
+                  </div>
+                  <div className="space-y-2 flex-1">
+                    <div className="flex items-center gap-2">
+                      <div className="status-dot status-dot-online" />
+                      <h3 className="text-sm font-medium text-primary">READY_TO_EXECUTE</h3>
+                    </div>
+                    <div className="text-xs text-muted-foreground space-y-1">
+                      <p>
+                        <span className="text-foreground">{name}</span> configured with{" "}
+                        <span className="text-foreground">{images.length} reference{images.length !== 1 ? "s" : ""}</span> in{" "}
+                        <span className="text-foreground">{style?.toUpperCase().replace("-", "_")}</span> mode.
+                      </p>
+                      <p className="text-muted-foreground/70">
+                        Execute to begin identity extraction and proceed to animation setup.
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleCreate}
+                    disabled={isCreating}
+                    className="bg-primary hover:bg-primary/80 text-primary-foreground h-9 px-4 text-xs tracking-wider"
+                  >
+                    {isCreating ? "PROCESSING..." : "[EXECUTE]"}
+                  </Button>
+                </div>
+              </div>
+            </section>
           )}
 
-          {/* Tips */}
-          <div className="grid md:grid-cols-3 gap-4 pt-8 border-t border-border">
-            <div className="p-4 rounded-lg bg-secondary/50">
-              <p className="text-sm font-medium mb-1">Multiple angles</p>
-              <p className="text-xs text-muted-foreground">
-                Front, side, and back views help AI understand your character&apos;s full form.
+          {/* Tips Panel */}
+          <section className="py-6 border-t border-border">
+            <div className="mb-4">
+              <p className="text-xs text-muted-foreground tracking-widest">
+                OPTIMIZATION_HINTS
               </p>
             </div>
-            <div className="p-4 rounded-lg bg-secondary/50">
-              <p className="text-sm font-medium mb-1">Consistent style</p>
-              <p className="text-xs text-muted-foreground">
-                Keep all references in the same art style for best results.
-              </p>
+            <div className="grid md:grid-cols-3 gap-4 stagger-children">
+              <div className="tech-border bg-card p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-primary text-xs metric-value">01</span>
+                  <span className="text-xs font-medium">MULTI_ANGLE</span>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Front, side, and back views maximize extraction accuracy. System performs better with complete spatial data.
+                </p>
+              </div>
+              <div className="tech-border bg-card p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-primary text-xs metric-value">02</span>
+                  <span className="text-xs font-medium">STYLE_MATCH</span>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Consistent art style across all references improves generation quality. Mixing styles may cause artifacts.
+                </p>
+              </div>
+              <div className="tech-border bg-card p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-primary text-xs metric-value">03</span>
+                  <span className="text-xs font-medium">CLEAR_FORM</span>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Distinct silhouettes and features produce cleaner animations. Avoid overlapping elements in references.
+                </p>
+              </div>
             </div>
-            <div className="p-4 rounded-lg bg-secondary/50">
-              <p className="text-sm font-medium mb-1">Clear silhouette</p>
-              <p className="text-xs text-muted-foreground">
-                Characters with distinct shapes and features animate better.
-              </p>
-            </div>
-          </div>
+          </section>
         </div>
       </main>
+
+      {/* Footer */}
+      <footer className="border-t border-border py-4 px-4">
+        <div className="max-w-5xl mx-auto flex items-center justify-between text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <span className="text-primary">[SF]</span>
+            <span>/characters/new</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <span>Character Creation Module</span>
+            <span className="text-border">|</span>
+            <span className="metric-value">v2.1.0</span>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }

@@ -1,22 +1,22 @@
 import type { Metadata } from "next";
-import { Outfit, JetBrains_Mono } from "next/font/google";
+import { IBM_Plex_Mono, Space_Mono } from "next/font/google";
 import "./globals.css";
 
-const outfit = Outfit({
-  variable: "--font-satoshi",
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--font-mono-primary",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
 });
 
-const jetbrainsMono = JetBrains_Mono({
-  variable: "--font-geist-mono",
+const spaceMono = Space_Mono({
+  variable: "--font-mono-display",
   subsets: ["latin"],
-  weight: ["400", "500"],
+  weight: ["400", "700"],
 });
 
 export const metadata: Metadata = {
-  title: "Sprite Forge | AI Animation Pipeline",
-  description: "Create consistent character animations with AI-powered frame generation",
+  title: "SPRITE_FORGE // Animation Pipeline v2.1",
+  description: "Technical animation frame generation system",
 };
 
 export default function RootLayout({
@@ -27,9 +27,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${outfit.variable} ${jetbrainsMono.variable} font-sans antialiased`}
+        className={`${ibmPlexMono.variable} ${spaceMono.variable} font-mono antialiased`}
       >
-        <div className="noise-texture min-h-screen">
+        <div className="scanlines min-h-screen">
           {children}
         </div>
       </body>

@@ -1,218 +1,309 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { MediaImage, Folder } from "iconoir-react";
 
 export default function Home() {
   return (
-    <div className="min-h-screen">
-      {/* Navigation */}
-      <nav className="fixed top-0 left-0 right-0 z-50 border-b border-border/50 bg-background/80 backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            {/* Logo Mark */}
-            <div className="w-8 h-8 rounded bg-gradient-to-br from-gold to-gold-muted flex items-center justify-center">
-              <svg className="w-5 h-5 text-primary-foreground" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-              </svg>
-            </div>
-            <span className="font-semibold text-lg tracking-tight">Sprite Forge</span>
-          </div>
-
+    <div className="min-h-screen grid-bg">
+      {/* Top Status Bar */}
+      <header className="fixed top-0 left-0 right-0 z-50 border-b border-border bg-background/95 backdrop-blur-sm">
+        <div className="h-10 px-4 flex items-center justify-between text-xs">
           <div className="flex items-center gap-6">
-            <Link href="/characters" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Characters
-            </Link>
-            <Link href="/animations" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Animations
-            </Link>
-            <div className="w-px h-5 bg-border" />
-            <Button size="sm" className="bg-gold hover:bg-gold/90 text-primary-foreground">
-              New Project
-            </Button>
+            <div className="flex items-center gap-2">
+              <span className="text-primary crt-glow">[SPRITE_FORGE]</span>
+              <span className="text-muted-foreground">v2.1.0</span>
+            </div>
+            <div className="flex items-center gap-4 text-muted-foreground">
+              <Link href="/characters" className="hover:text-primary transition-colors">
+                /characters
+              </Link>
+              <Link href="/animations" className="hover:text-primary transition-colors">
+                /animations
+              </Link>
+              <Link href="/export" className="hover:text-primary transition-colors">
+                /export
+              </Link>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div className="status-dot status-dot-online animate-pulse-terminal" />
+              <span className="text-muted-foreground">SYS_ONLINE</span>
+            </div>
+            <div className="w-px h-4 bg-border" />
+            <span className="text-muted-foreground data-readout">
+              {new Date().toISOString().split("T")[0]}
+            </span>
           </div>
         </div>
-      </nav>
+      </header>
 
-      {/* Hero Section */}
-      <section className="pt-32 pb-20 px-6">
-        <div className="max-w-7xl mx-auto">
-          <div className="grid lg:grid-cols-2 gap-16 items-center">
-            {/* Left: Text Content */}
-            <div className="space-y-8 stagger-children">
-              <div className="space-y-4">
-                <p className="text-gold font-mono text-sm tracking-widest uppercase">
-                  AI Animation Pipeline
+      {/* Main Dashboard Area */}
+      <main className="pt-16 pb-12 px-4">
+        <div className="max-w-6xl mx-auto">
+          {/* System Header */}
+          <section className="py-12 border-b border-border">
+            <div className="grid lg:grid-cols-[1fr,auto] gap-12 items-start">
+              {/* Left: System Info */}
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground tracking-widest">
+                    ANIMATION_PIPELINE_SYSTEM
+                  </p>
+                  <h1 className="text-3xl lg:text-4xl font-bold tracking-tight">
+                    <span className="text-primary crt-glow">SPRITE</span>
+                    <span className="text-muted-foreground">_</span>
+                    <span>FORGE</span>
+                  </h1>
+                </div>
+
+                <p className="text-sm text-muted-foreground max-w-lg leading-relaxed">
+                  AI-driven frame generation system. Input character reference data,
+                  define motion parameters, output game-ready animation sequences.
                 </p>
-                <h1 className="text-5xl lg:text-6xl font-bold leading-[1.1] tracking-tight">
-                  Forge sprites that
-                  <br />
-                  <span className="text-gold">move</span>
-                </h1>
+
+                <div className="flex items-center gap-3 pt-2">
+                  <Link href="/characters/new">
+                    <Button className="bg-primary hover:bg-primary/80 text-primary-foreground h-9 px-4 text-xs tracking-wider">
+                      [NEW_CHARACTER]
+                    </Button>
+                  </Link>
+                  <Link href="#specs">
+                    <Button variant="outline" className="h-9 px-4 text-xs tracking-wider border-border hover:border-primary hover:text-primary">
+                      [VIEW_SPECS]
+                    </Button>
+                  </Link>
+                </div>
               </div>
 
-              <p className="text-lg text-muted-foreground max-w-md leading-relaxed">
-                Upload your character concepts. Describe the motion.
-                Watch AI generate consistent, game-ready animation frames.
-              </p>
-
-              <div className="flex items-center gap-4 pt-4">
-                <Link href="/characters/new">
-                  <Button size="lg" className="bg-gold hover:bg-gold/90 text-primary-foreground px-8 h-12">
-                    Start Creating
-                  </Button>
-                </Link>
-                <Link href="#workflow">
-                  <Button variant="outline" size="lg" className="h-12 border-border hover:bg-secondary">
-                    See How It Works
-                  </Button>
-                </Link>
-              </div>
-
-              {/* Stats */}
-              <div className="flex items-center gap-8 pt-8 border-t border-border">
-                <div>
-                  <p className="text-2xl font-bold text-gold">8-32</p>
-                  <p className="text-xs text-muted-foreground uppercase tracking-wider">Frames per animation</p>
+              {/* Right: Quick Stats Panel */}
+              <div className="tech-border corner-brackets bg-card p-4 min-w-[280px]">
+                <div className="text-xs text-muted-foreground mb-3 tracking-widest">
+                  SYSTEM_METRICS
                 </div>
-                <div className="w-px h-10 bg-border" />
-                <div>
-                  <p className="text-2xl font-bold">AI</p>
-                  <p className="text-xs text-muted-foreground uppercase tracking-wider">Powered generation</p>
-                </div>
-                <div className="w-px h-10 bg-border" />
-                <div>
-                  <p className="text-2xl font-bold">100%</p>
-                  <p className="text-xs text-muted-foreground uppercase tracking-wider">Character consistency</p>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">FRAME_RANGE</span>
+                    <span className="text-sm text-primary metric-value">8-32</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">ENGINE_TYPE</span>
+                    <span className="text-sm metric-value">AI_GEN</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">CONSISTENCY</span>
+                    <span className="text-sm text-success metric-value">100%</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">STATUS</span>
+                    <span className="text-sm text-success metric-value flex items-center gap-2">
+                      <div className="status-dot status-dot-online" />
+                      READY
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
+          </section>
 
-            {/* Right: Visual */}
-            <div className="relative">
-              {/* Decorative frame */}
-              <div className="absolute -inset-4 rounded-2xl border border-gold/20 glow-gold-subtle" />
-
-              {/* Main visual container */}
-              <div className="relative rounded-xl overflow-hidden bg-card border border-border">
-                {/* Simulated animation preview */}
-                <div className="aspect-[4/3] bg-gradient-to-br from-secondary to-card flex items-center justify-center">
-                  {/* Frame strip visualization */}
-                  <div className="flex gap-2 p-8">
-                    {[0, 1, 2, 3, 4, 5].map((i) => (
+          {/* Animation Preview Panel */}
+          <section className="py-8 border-b border-border">
+            <div className="grid lg:grid-cols-[1fr,320px] gap-6">
+              {/* Frame Visualizer */}
+              <div className="tech-border bg-card">
+                <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground tracking-wider">
+                    FRAME_BUFFER
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <div className="status-dot status-dot-online" />
+                    <span className="text-xs text-muted-foreground">LIVE</span>
+                  </div>
+                </div>
+                <div className="p-6">
+                  <div className="flex items-center justify-center gap-2 stagger-children">
+                    {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
                       <div
                         key={i}
-                        className="w-16 h-20 rounded bg-muted border border-border flex items-center justify-center"
-                        style={{
-                          animationDelay: `${i * 100}ms`,
-                          opacity: 0.4 + (i * 0.1)
-                        }}
+                        className="relative group"
                       >
-                        <div className="w-8 h-10 rounded-sm bg-gold/20 border border-gold/30" />
+                        <div
+                          className="w-14 h-18 bg-secondary border border-border flex items-center justify-center transition-all duration-150 hover:border-primary hover:crt-glow-box"
+                          style={{
+                            opacity: 0.4 + (i * 0.08),
+                          }}
+                        >
+                          <div className="w-6 h-8 border border-primary/30 bg-primary/10" />
+                        </div>
+                        <span className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[10px] text-muted-foreground">
+                          {String(i).padStart(2, "0")}
+                        </span>
                       </div>
                     ))}
                   </div>
                 </div>
+                <div className="px-3 py-2 border-t border-border flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">walk_cycle.seq</span>
+                  <span className="text-primary metric-value">8F @ 12FPS</span>
+                </div>
+              </div>
 
-                {/* Bottom bar */}
-                <div className="px-4 py-3 border-t border-border bg-secondary/50 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                    <span className="text-xs text-muted-foreground font-mono">walk_cycle.anim</span>
+              {/* Output Config */}
+              <div className="space-y-4">
+                <div className="tech-border bg-card p-4">
+                  <div className="text-xs text-muted-foreground mb-3 tracking-widest">
+                    OUTPUT_CONFIG
                   </div>
-                  <span className="text-xs text-gold font-mono">6 frames @ 12fps</span>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">FORMAT</span>
+                      <span>PNG_SEQ</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">RESOLUTION</span>
+                      <span>128x128</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">COLOR_DEPTH</span>
+                      <span>32BIT</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">COMPRESSION</span>
+                      <span className="text-success">LOSSLESS</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="tech-border bg-card p-4">
+                  <div className="text-xs text-muted-foreground mb-3 tracking-widest">
+                    EXPORT_TARGETS
+                  </div>
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex items-center gap-2">
+                      <MediaImage className="w-3.5 h-3.5 text-primary" strokeWidth={1.5} />
+                      <span>Spritesheet</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Folder className="w-3.5 h-3.5 text-primary" strokeWidth={1.5} />
+                      <span>Individual Frames</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <MediaImage className="w-3.5 h-3.5 text-primary" strokeWidth={1.5} />
+                      <span>WebP Animation</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <MediaImage className="w-3.5 h-3.5 text-primary" strokeWidth={1.5} />
+                      <span>GIF Preview</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          </section>
+
+          {/* Pipeline Steps */}
+          <section id="specs" className="py-8">
+            <div className="mb-6">
+              <span className="text-xs text-muted-foreground tracking-widest">
+                PIPELINE_SEQUENCE
+              </span>
+            </div>
+
+            <div className="grid md:grid-cols-4 gap-4 stagger-children">
+              {/* Step 01 */}
+              <div className="tech-border bg-card p-4 hover-highlight group">
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-primary text-lg font-bold metric-value">01</span>
+                  <div className="h-px flex-1 bg-border group-hover:bg-primary/30 transition-colors" />
+                </div>
+                <h3 className="text-sm font-medium mb-2">INPUT_REF</h3>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Upload character reference images. Multiple viewing angles recommended for optimal extraction.
+                </p>
+              </div>
+
+              {/* Step 02 */}
+              <div className="tech-border bg-card p-4 hover-highlight group">
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-primary text-lg font-bold metric-value">02</span>
+                  <div className="h-px flex-1 bg-border group-hover:bg-primary/30 transition-colors" />
+                </div>
+                <h3 className="text-sm font-medium mb-2">EXTRACT_ID</h3>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  System extracts visual DNA from references. Character identity locked for consistent generation.
+                </p>
+              </div>
+
+              {/* Step 03 */}
+              <div className="tech-border bg-card p-4 hover-highlight group">
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-primary text-lg font-bold metric-value">03</span>
+                  <div className="h-px flex-1 bg-border group-hover:bg-primary/30 transition-colors" />
+                </div>
+                <h3 className="text-sm font-medium mb-2">DEFINE_MOTION</h3>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Specify animation parameters. Keyframes, timing, frame count. Text description supported.
+                </p>
+              </div>
+
+              {/* Step 04 */}
+              <div className="tech-border bg-card p-4 hover-highlight group">
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-primary text-lg font-bold metric-value">04</span>
+                  <div className="h-px flex-1 bg-border group-hover:bg-primary/30 transition-colors" />
+                </div>
+                <h3 className="text-sm font-medium mb-2">GENERATE_OUT</h3>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  AI generates frames. Export as spritesheet, individual PNGs, or animated WebP format.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          {/* Quick Start Terminal */}
+          <section className="py-8 border-t border-border">
+            <div className="tech-border bg-card">
+              <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="status-dot status-dot-online animate-pulse-terminal" />
+                  <span className="text-xs text-muted-foreground tracking-wider">QUICK_START</span>
+                </div>
+                <span className="text-xs text-muted-foreground">session_01</span>
+              </div>
+              <div className="p-6 font-mono text-sm">
+                <div className="space-y-2 text-muted-foreground">
+                  <p><span className="text-primary">$</span> sprite-forge --new-character</p>
+                  <p className="text-xs pl-4">Loading character creation module...</p>
+                  <p className="text-xs pl-4">Reference input: <span className="text-foreground">AWAITING</span></p>
+                  <p className="text-xs pl-4">Style config: <span className="text-foreground">AWAITING</span></p>
+                  <p className="text-xs pl-4 text-success">System ready for input.</p>
+                </div>
+                <div className="mt-6 flex items-center gap-4">
+                  <Link href="/characters/new">
+                    <Button className="bg-primary hover:bg-primary/80 text-primary-foreground h-8 px-4 text-xs tracking-wider">
+                      [EXECUTE]
+                    </Button>
+                  </Link>
+                  <span className="text-xs text-muted-foreground">or run: <span className="text-primary">sf new</span></span>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
-      </section>
-
-      {/* Workflow Section */}
-      <section id="workflow" className="py-24 px-6 border-t border-border">
-        <div className="max-w-7xl mx-auto">
-          <div className="text-center mb-16 space-y-4">
-            <p className="text-gold font-mono text-sm tracking-widest uppercase">Workflow</p>
-            <h2 className="text-3xl lg:text-4xl font-bold">From concept to animation</h2>
-          </div>
-
-          <div className="grid md:grid-cols-4 gap-6 stagger-children">
-            {/* Step 1 */}
-            <div className="group p-6 rounded-xl bg-card border border-border hover:border-gold/30 transition-all duration-300 hover:glow-gold-subtle">
-              <div className="w-12 h-12 rounded-lg bg-gold/10 border border-gold/20 flex items-center justify-center mb-4 group-hover:bg-gold/20 transition-colors">
-                <span className="text-gold font-mono font-bold">01</span>
-              </div>
-              <h3 className="font-semibold mb-2">Upload References</h3>
-              <p className="text-sm text-muted-foreground">
-                Drop in your character concept art. Multiple angles work best.
-              </p>
-            </div>
-
-            {/* Step 2 */}
-            <div className="group p-6 rounded-xl bg-card border border-border hover:border-gold/30 transition-all duration-300 hover:glow-gold-subtle">
-              <div className="w-12 h-12 rounded-lg bg-gold/10 border border-gold/20 flex items-center justify-center mb-4 group-hover:bg-gold/20 transition-colors">
-                <span className="text-gold font-mono font-bold">02</span>
-              </div>
-              <h3 className="font-semibold mb-2">Create Identity</h3>
-              <p className="text-sm text-muted-foreground">
-                AI extracts your character&apos;s visual DNA for consistent generation.
-              </p>
-            </div>
-
-            {/* Step 3 */}
-            <div className="group p-6 rounded-xl bg-card border border-border hover:border-gold/30 transition-all duration-300 hover:glow-gold-subtle">
-              <div className="w-12 h-12 rounded-lg bg-gold/10 border border-gold/20 flex items-center justify-center mb-4 group-hover:bg-gold/20 transition-colors">
-                <span className="text-gold font-mono font-bold">03</span>
-              </div>
-              <h3 className="font-semibold mb-2">Define Animation</h3>
-              <p className="text-sm text-muted-foreground">
-                Describe the motion. Set keyframes. Choose frame count and timing.
-              </p>
-            </div>
-
-            {/* Step 4 */}
-            <div className="group p-6 rounded-xl bg-card border border-border hover:border-gold/30 transition-all duration-300 hover:glow-gold-subtle">
-              <div className="w-12 h-12 rounded-lg bg-gold/10 border border-gold/20 flex items-center justify-center mb-4 group-hover:bg-gold/20 transition-colors">
-                <span className="text-gold font-mono font-bold">04</span>
-              </div>
-              <h3 className="font-semibold mb-2">Generate & Export</h3>
-              <p className="text-sm text-muted-foreground">
-                AI fills the frames. Export as spritesheet, WebP, or individual PNGs.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* CTA Section */}
-      <section className="py-24 px-6 border-t border-border">
-        <div className="max-w-3xl mx-auto text-center space-y-8">
-          <h2 className="text-3xl lg:text-4xl font-bold">
-            Ready to bring your characters to life?
-          </h2>
-          <p className="text-lg text-muted-foreground">
-            Start with a single character reference. See what&apos;s possible.
-          </p>
-          <Link href="/characters/new">
-            <Button size="lg" className="bg-gold hover:bg-gold/90 text-primary-foreground px-12 h-14 text-lg animate-pulse-gold">
-              Create Your First Animation
-            </Button>
-          </Link>
-        </div>
-      </section>
+      </main>
 
       {/* Footer */}
-      <footer className="py-8 px-6 border-t border-border">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <div className="w-5 h-5 rounded bg-gold/20 flex items-center justify-center">
-              <svg className="w-3 h-3 text-gold" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-              </svg>
-            </div>
-            <span className="text-sm">Sprite Forge</span>
+      <footer className="border-t border-border py-4 px-4">
+        <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <span className="text-primary">[SF]</span>
+            <span>SPRITE_FORGE</span>
           </div>
-          <p className="text-xs text-muted-foreground">
-            AI-powered animation for game developers
-          </p>
+          <div className="flex items-center gap-4">
+            <span>AI Animation Pipeline</span>
+            <span className="text-border">|</span>
+            <span className="metric-value">v2.1.0</span>
+          </div>
         </div>
       </footer>
     </div>
