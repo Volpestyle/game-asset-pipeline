@@ -10,25 +10,25 @@ export default function Home() {
         <div className="h-10 px-4 flex items-center justify-between text-xs">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2">
-              <span className="text-primary crt-glow">[SPRITE_FORGE]</span>
+              <span className="text-primary crt-glow">[SPRITE FORGE]</span>
               <span className="text-muted-foreground">v2.1.0</span>
             </div>
             <div className="flex items-center gap-4 text-muted-foreground">
               <Link href="/characters" className="hover:text-primary transition-colors">
-                /characters
+                characters
               </Link>
               <Link href="/animations" className="hover:text-primary transition-colors">
-                /animations
+                animations
               </Link>
               <Link href="/export" className="hover:text-primary transition-colors">
-                /export
+                export
               </Link>
             </div>
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <div className="status-dot status-dot-online animate-pulse-terminal" />
-              <span className="text-muted-foreground">SYS_ONLINE</span>
+              <span className="text-muted-foreground">SYS ONLINE</span>
             </div>
             <div className="w-px h-4 bg-border" />
             <span className="text-muted-foreground data-readout">
@@ -48,7 +48,7 @@ export default function Home() {
               <div className="space-y-6">
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground tracking-widest">
-                    ANIMATION_PIPELINE_SYSTEM
+                    ANIMATION PIPELINE SYSTEM
                   </p>
                   <h1 className="text-3xl lg:text-4xl font-bold tracking-tight">
                     <span className="text-primary crt-glow">SPRITE</span>
@@ -65,7 +65,7 @@ export default function Home() {
                 <div className="flex items-center gap-3 pt-2">
                   <Link href="/characters/new">
                     <Button className="bg-primary hover:bg-primary/80 text-primary-foreground h-9 px-4 text-xs tracking-wider">
-                      [NEW_CHARACTER]
+                      [NEW CHARACTER]
                     </Button>
                   </Link>
                   <Link href="#specs">
@@ -79,16 +79,16 @@ export default function Home() {
               {/* Right: Quick Stats Panel */}
               <div className="tech-border corner-brackets bg-card p-4 min-w-[280px]">
                 <div className="text-xs text-muted-foreground mb-3 tracking-widest">
-                  SYSTEM_METRICS
+                  SYSTEM METRICS
                 </div>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">FRAME_RANGE</span>
+                    <span className="text-xs text-muted-foreground">FRAME RANGE</span>
                     <span className="text-sm text-primary metric-value">8-32</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">ENGINE_TYPE</span>
-                    <span className="text-sm metric-value">AI_GEN</span>
+                    <span className="text-xs text-muted-foreground">ENGINE TYPE</span>
+                    <span className="text-sm metric-value">AI GEN</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-muted-foreground">CONSISTENCY</span>
@@ -113,7 +113,7 @@ export default function Home() {
               <div className="tech-border bg-card">
                 <div className="px-3 py-2 border-b border-border flex items-center justify-between">
                   <span className="text-xs text-muted-foreground tracking-wider">
-                    FRAME_BUFFER
+                    FRAME BUFFER
                   </span>
                   <div className="flex items-center gap-2">
                     <div className="status-dot status-dot-online" />
@@ -152,7 +152,7 @@ export default function Home() {
               <div className="space-y-4">
                 <div className="tech-border bg-card p-4">
                   <div className="text-xs text-muted-foreground mb-3 tracking-widest">
-                    OUTPUT_CONFIG
+                    OUTPUT CONFIG
                   </div>
                   <div className="space-y-2 text-xs">
                     <div className="flex justify-between">
@@ -164,7 +164,7 @@ export default function Home() {
                       <span>128x128</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">COLOR_DEPTH</span>
+                      <span className="text-muted-foreground">COLOR DEPTH</span>
                       <span>32BIT</span>
                     </div>
                     <div className="flex justify-between">
@@ -176,7 +176,7 @@ export default function Home() {
 
                 <div className="tech-border bg-card p-4">
                   <div className="text-xs text-muted-foreground mb-3 tracking-widest">
-                    EXPORT_TARGETS
+                    EXPORT TARGETS
                   </div>
                   <div className="space-y-1.5 text-xs">
                     <div className="flex items-center gap-2">
@@ -205,7 +205,7 @@ export default function Home() {
           <section id="specs" className="py-8">
             <div className="mb-6">
               <span className="text-xs text-muted-foreground tracking-widest">
-                PIPELINE_SEQUENCE
+                PIPELINE SEQUENCE
               </span>
             </div>
 
@@ -216,7 +216,7 @@ export default function Home() {
                   <span className="text-primary text-lg font-bold metric-value">01</span>
                   <div className="h-px flex-1 bg-border group-hover:bg-primary/30 transition-colors" />
                 </div>
-                <h3 className="text-sm font-medium mb-2">INPUT_REF</h3>
+                <h3 className="text-sm font-medium mb-2">INPUT REF</h3>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Upload character reference images. Multiple viewing angles recommended for optimal extraction.
                 </p>
@@ -228,7 +228,7 @@ export default function Home() {
                   <span className="text-primary text-lg font-bold metric-value">02</span>
                   <div className="h-px flex-1 bg-border group-hover:bg-primary/30 transition-colors" />
                 </div>
-                <h3 className="text-sm font-medium mb-2">EXTRACT_ID</h3>
+                <h3 className="text-sm font-medium mb-2">EXTRACT ID</h3>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   System extracts visual DNA from references. Character identity locked for consistent generation.
                 </p>
@@ -240,7 +240,7 @@ export default function Home() {
                   <span className="text-primary text-lg font-bold metric-value">03</span>
                   <div className="h-px flex-1 bg-border group-hover:bg-primary/30 transition-colors" />
                 </div>
-                <h3 className="text-sm font-medium mb-2">DEFINE_MOTION</h3>
+                <h3 className="text-sm font-medium mb-2">DEFINE MOTION</h3>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Specify animation parameters. Keyframes, timing, frame count. Text description supported.
                 </p>
@@ -252,7 +252,7 @@ export default function Home() {
                   <span className="text-primary text-lg font-bold metric-value">04</span>
                   <div className="h-px flex-1 bg-border group-hover:bg-primary/30 transition-colors" />
                 </div>
-                <h3 className="text-sm font-medium mb-2">GENERATE_OUT</h3>
+                <h3 className="text-sm font-medium mb-2">GENERATE OUT</h3>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   AI generates frames. Export as spritesheet, individual PNGs, or animated WebP format.
                 </p>
@@ -266,13 +266,13 @@ export default function Home() {
               <div className="px-3 py-2 border-b border-border flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <div className="status-dot status-dot-online animate-pulse-terminal" />
-                  <span className="text-xs text-muted-foreground tracking-wider">QUICK_START</span>
+                  <span className="text-xs text-muted-foreground tracking-wider">QUICK START</span>
                 </div>
                 <span className="text-xs text-muted-foreground">session_01</span>
               </div>
               <div className="p-6 font-mono text-sm">
                 <div className="space-y-2 text-muted-foreground">
-                  <p><span className="text-primary">$</span> sprite-forge --new-character</p>
+                  <p><span className="text-primary">$</span> sprite forge --new-character</p>
                   <p className="text-xs pl-4">Loading character creation module...</p>
                   <p className="text-xs pl-4">Reference input: <span className="text-foreground">AWAITING</span></p>
                   <p className="text-xs pl-4">Style config: <span className="text-foreground">AWAITING</span></p>
@@ -297,7 +297,7 @@ export default function Home() {
         <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
             <span className="text-primary">[SF]</span>
-            <span>SPRITE_FORGE</span>
+            <span>SPRITE FORGE</span>
           </div>
           <div className="flex items-center gap-4">
             <span>AI Animation Pipeline</span>

@@ -41,7 +41,7 @@ export default function NewCharacterPage() {
             </Link>
             <div className="w-px h-4 bg-border" />
             <div className="flex items-center gap-2">
-              <span className="text-primary">/characters/new</span>
+              <span className="text-primary">characters : new</span>
             </div>
           </div>
 
@@ -77,10 +77,10 @@ export default function NewCharacterPage() {
             <div className="flex items-start justify-between">
               <div className="space-y-2">
                 <p className="text-xs text-muted-foreground tracking-widest">
-                  CHARACTER_CREATION_MODULE
+                  CHARACTER CREATION MODULE
                 </p>
                 <h1 className="text-2xl font-bold tracking-tight">
-                  NEW_<span className="text-primary crt-glow">CHARACTER</span>
+                  NEW <span className="text-primary crt-glow">CHARACTER</span>
                 </h1>
                 <p className="text-sm text-muted-foreground max-w-lg">
                   Input reference images for identity extraction. System will analyze visual data
@@ -100,13 +100,13 @@ export default function NewCharacterPage() {
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">REFS</span>
                     <span className={images.length > 0 ? "text-success" : "text-warning"}>
-                      {images.length > 0 ? `${images.length}_LOADED` : "REQUIRED"}
+                      {images.length > 0 ? `${images.length} LOADED` : "REQUIRED"}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">STYLE</span>
                     <span className={style ? "text-success" : "text-warning"}>
-                      {style ? style.toUpperCase().replace("-", "_") : "REQUIRED"}
+                      {style ? style.toUpperCase().replace("-", " ") : "REQUIRED"}
                     </span>
                   </div>
                   <div className="border-t border-border pt-2 mt-2">
@@ -129,7 +129,7 @@ export default function NewCharacterPage() {
                 <p className="text-xs text-muted-foreground tracking-widest mb-1">
                   IDENTIFIER
                 </p>
-                <p className="text-sm font-medium">CHARACTER_NAME</p>
+                <p className="text-sm font-medium">CHARACTER NAME</p>
               </div>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-primary text-sm">
@@ -168,13 +168,13 @@ export default function NewCharacterPage() {
                   <div className="space-y-2 flex-1">
                     <div className="flex items-center gap-2">
                       <div className="status-dot status-dot-online" />
-                      <h3 className="text-sm font-medium text-primary">READY_TO_EXECUTE</h3>
+                      <h3 className="text-sm font-medium text-primary">READY TO EXECUTE</h3>
                     </div>
                     <div className="text-xs text-muted-foreground space-y-1">
                       <p>
                         <span className="text-foreground">{name}</span> configured with{" "}
                         <span className="text-foreground">{images.length} reference{images.length !== 1 ? "s" : ""}</span> in{" "}
-                        <span className="text-foreground">{style?.toUpperCase().replace("-", "_")}</span> mode.
+                        <span className="text-foreground">{style?.toUpperCase().replace("-", " ")}</span> mode.
                       </p>
                       <p className="text-muted-foreground/70">
                         Execute to begin identity extraction and proceed to animation setup.
@@ -197,14 +197,14 @@ export default function NewCharacterPage() {
           <section className="py-6 border-t border-border">
             <div className="mb-4">
               <p className="text-xs text-muted-foreground tracking-widest">
-                OPTIMIZATION_HINTS
+                OPTIMIZATION HINTS
               </p>
             </div>
             <div className="grid md:grid-cols-3 gap-4 stagger-children">
               <div className="tech-border bg-card p-4">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-primary text-xs metric-value">01</span>
-                  <span className="text-xs font-medium">MULTI_ANGLE</span>
+                  <span className="text-xs font-medium">MULTI ANGLE</span>
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Front, side, and back views maximize extraction accuracy. System performs better with complete spatial data.
@@ -213,7 +213,7 @@ export default function NewCharacterPage() {
               <div className="tech-border bg-card p-4">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-primary text-xs metric-value">02</span>
-                  <span className="text-xs font-medium">STYLE_MATCH</span>
+                  <span className="text-xs font-medium">STYLE MATCH</span>
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Consistent art style across all references improves generation quality. Mixing styles may cause artifacts.
@@ -222,7 +222,7 @@ export default function NewCharacterPage() {
               <div className="tech-border bg-card p-4">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-primary text-xs metric-value">03</span>
-                  <span className="text-xs font-medium">CLEAR_FORM</span>
+                  <span className="text-xs font-medium">CLEAR FORM</span>
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Distinct silhouettes and features produce cleaner animations. Avoid overlapping elements in references.
@@ -238,7 +238,7 @@ export default function NewCharacterPage() {
         <div className="max-w-5xl mx-auto flex items-center justify-between text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
             <span className="text-primary">[SF]</span>
-            <span>/characters/new</span>
+            <span>characters : new</span>
           </div>
           <div className="flex items-center gap-4">
             <span>Character Creation Module</span>

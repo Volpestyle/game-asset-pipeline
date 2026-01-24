@@ -104,9 +104,9 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs text-muted-foreground tracking-widest mb-1">
-            REFERENCE_INPUT
+            REFERENCE INPUT
           </p>
-          <p className="text-sm font-medium">IMAGE_DATA</p>
+          <p className="text-sm font-medium">IMAGE DATA</p>
         </div>
         {images.length > 0 && (
           <div className="text-xs text-muted-foreground">
@@ -142,7 +142,7 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
 
           <div className="space-y-1">
             <p className="text-sm text-foreground">
-              DROP_FILES_HERE
+              DROP FILES HERE
             </p>
             <p className="text-xs text-muted-foreground">
               or click to browse filesystem
@@ -158,7 +158,7 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
       {/* Uploaded Images Grid */}
       {images.length > 0 && (
         <div className="space-y-4 animate-fade-in">
-          <div className="ascii-divider">LOADED_REFERENCES</div>
+          <div className="ascii-divider">LOADED REFERENCES</div>
 
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 stagger-children">
             {images.map((image, index) => (
@@ -220,7 +220,7 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
                         }}
                         className="w-full text-xs bg-card border border-border hover:border-primary hover:text-primary px-2 py-1.5 transition-colors"
                       >
-                        [SET_PRIMARY]
+                        [SET PRIMARY]
                       </button>
                     )}
                     <button
@@ -249,7 +249,7 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
             >
               <div className="text-center">
                 <Plus className="w-6 h-6 text-muted-foreground mx-auto" strokeWidth={1.5} />
-                <p className="text-[10px] text-muted-foreground mt-2">ADD_MORE</p>
+                <p className="text-[10px] text-muted-foreground mt-2">ADD MORE</p>
               </div>
             </div>
           </div>
@@ -261,9 +261,9 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
         <div className="space-y-4 animate-slide-up">
           <div>
             <p className="text-xs text-muted-foreground tracking-widest mb-1">
-              RENDER_MODE
+              RENDER MODE
             </p>
-            <p className="text-sm font-medium">ART_STYLE</p>
+            <p className="text-sm font-medium">ART STYLE</p>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
