@@ -239,6 +239,9 @@ Combine both for best results:
 animation frame {frame_number} of {total_frames}
 ```
 
+In the current pipeline, `{art_style}` is derived from the character’s selected style
+and swaps in different constraint phrases (pixel‑art vs hand‑drawn vs anime, etc.).
+
 ### Animation-Specific Prompts
 
 **Walk Cycle (8 frames)**:

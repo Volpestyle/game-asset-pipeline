@@ -85,6 +85,10 @@ The app auto-coerces invalid sizes to a supported size and builds the working re
 
 3) Prompt + constraints for “pixel sprite animation” (so it doesn’t turn into smooth art)
 
+Note: the app now swaps these style cues based on the character’s art style.
+Pixel‑art uses the strict pixel constraints; other styles use softer style‑specific
+phrasing (e.g., “hand‑drawn 2d sprite” or “anime‑style character sprite”).
+
 Sora prompting best practices: be explicit about shot type, subject, action, camera, lighting.  ￼
 Also note Sora API has content restrictions (under‑18 only, copyrighted characters rejected, real people not allowed, etc.).  ￼
 

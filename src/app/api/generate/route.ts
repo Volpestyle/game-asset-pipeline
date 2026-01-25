@@ -69,21 +69,62 @@ function parseSize(size: string) {
   return { width, height };
 }
 
+const ANIMATION_STYLE_HINTS: Record<string, string> = {
+  idle: "subtle breathing, gentle sway, standing in relaxed pose",
+};
+
+const ART_STYLE_PROMPTS: Record<
+  string,
+  { label: string; constraints: string[] }
+> = {
+  "pixel-art": {
+    label: "pixel art sprite",
+    constraints: [
+      "limited color palette",
+      "crisp hard edges",
+      "no anti-aliasing",
+      "no motion blur",
+    ],
+  },
+  "hand-drawn": {
+    label: "hand-drawn 2d sprite",
+    constraints: ["clean linework", "flat shading", "no motion blur"],
+  },
+  "3d-rendered": {
+    label: "3d rendered character sprite",
+    constraints: ["clean lighting", "no motion blur"],
+  },
+  anime: {
+    label: "anime-style character sprite",
+    constraints: ["clean lineart", "cel shading", "no motion blur"],
+  },
+  realistic: {
+    label: "realistic character sprite",
+    constraints: ["natural lighting", "no motion blur"],
+  },
+  custom: {
+    label: "character sprite",
+    constraints: ["no motion blur"],
+  },
+};
+
 function buildSoraPrompt(options: {
   description: string;
   style?: string;
+  artStyle?: string;
   bgKeyColor?: string;
 }) {
   const bg = options.bgKeyColor ?? DEFAULT_BG_KEY;
-  const styleHint = options.style ? `${options.style} animation` : "";
+  const styleKey = options.style ?? "";
+  const styleHint = ANIMATION_STYLE_HINTS[styleKey] ?? (styleKey ? `${styleKey} animation` : "");
+  const artStyleKey = options.artStyle ?? "pixel-art";
+  const artConfig =
+    ART_STYLE_PROMPTS[artStyleKey] ?? ART_STYLE_PROMPTS.custom;
   const parts = [
     options.description,
     styleHint,
-    "pixel art sprite",
-    "limited color palette",
-    "crisp hard edges",
-    "no anti-aliasing",
-    "no motion blur",
+    artConfig.label,
+    ...artConfig.constraints,
     "static camera",
     "character stays centered, no camera movement",
     "keep proportions and identity identical to reference",
@@ -362,6 +403,7 @@ async function runGeneration(animationId: string) {
       const prompt = buildSoraPrompt({
         description: String(animation.description ?? ""),
         style: String(animation.style ?? ""),
+        artStyle: String(character.style ?? "pixel-art"),
         bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
       });
 

@@ -27,6 +27,7 @@ Upload character reference images → Define animation parameters → Generate c
 - Upload multiple reference images (concept art, multi-angle views)
 - System extracts character "identity" for consistent generation
 - Supports various art styles (pixel art, hand-drawn, 3D rendered, etc.)
+- Character style is injected into the generation prompt
 
 ### Animation Configuration
 - Text description of desired animation ("walk cycle", "attack slash", etc.)
