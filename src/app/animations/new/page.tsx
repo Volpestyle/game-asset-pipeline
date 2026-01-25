@@ -1,0 +1,432 @@
+"use client";
+
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Header } from "@/components/layout";
+import type { AnimationStyle, Character } from "@/types";
+import {
+  EXTRACT_FPS_OPTIONS,
+  VIDEO_SECONDS_OPTIONS,
+  coerceVideoSizeForModel,
+  getDefaultVideoSize,
+  getVideoSizeOptions,
+  isSizeValidForModel,
+  getExpectedFrameCount,
+} from "@/components/animation";
+
+const STYLE_OPTIONS: { value: AnimationStyle; label: string; code: string }[] = [
+  { value: "idle", label: "Idle", code: "IDL" },
+  { value: "walk", label: "Walk", code: "WLK" },
+  { value: "run", label: "Run", code: "RUN" },
+  { value: "attack", label: "Attack", code: "ATK" },
+  { value: "jump", label: "Jump", code: "JMP" },
+  { value: "custom", label: "Custom", code: "CST" },
+];
+
+const MODEL_OPTIONS = [
+  { value: "sora-2", label: "sora-2 (draft)" },
+  { value: "sora-2-pro", label: "sora-2-pro (final)" },
+];
+
+const LOOP_OPTIONS: { value: "pingpong" | "loop"; label: string }[] = [
+  { value: "pingpong", label: "Ping-pong (safe loop)" },
+  { value: "loop", label: "Loop (start/end must match)" },
+];
+
+const NewAnimationForm = () => {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const preselectedCharacter = searchParams.get("characterId") ?? "";
+
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [characterId, setCharacterId] = useState(preselectedCharacter);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [style, setStyle] = useState<AnimationStyle>("idle");
+  const defaultModel = "sora-2";
+  const [generationModel, setGenerationModel] = useState(defaultModel);
+  const [generationSeconds, setGenerationSeconds] = useState(4);
+  const [generationSize, setGenerationSize] = useState(() =>
+    getDefaultVideoSize(defaultModel)
+  );
+  const [extractFps, setExtractFps] = useState(6);
+  const [loopMode, setLoopMode] = useState<"pingpong" | "loop">("pingpong");
+  const [sheetColumns, setSheetColumns] = useState(6);
+  const [isCreating, setIsCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const selectedCharacter = useMemo(
+    () => characters.find((character) => character.id === characterId),
+    [characters, characterId]
+  );
+
+  const canCreate = characterId && name.trim() && description.trim();
+  const expectedFrameCount = getExpectedFrameCount(generationSeconds, extractFps);
+  const loopedFrameCount =
+    loopMode === "pingpong"
+      ? Math.max(1, expectedFrameCount * 2 - 2)
+      : expectedFrameCount;
+
+  const frameWidth = selectedCharacter?.baseWidth ?? 253;
+  const frameHeight = selectedCharacter?.baseHeight ?? 504;
+  const sizeOptions = useMemo(
+    () => getVideoSizeOptions(generationModel),
+    [generationModel]
+  );
+
+  const loadCharacters = async () => {
+    try {
+      const response = await fetch("/api/characters", { cache: "no-store" });
+      const data = await response.json();
+      setCharacters(data.characters ?? []);
+    } catch {
+      setCharacters([]);
+    }
+  };
+
+  useEffect(() => {
+    void loadCharacters();
+  }, []);
+
+  const handleCreate = async () => {
+    if (!canCreate) return;
+
+    setIsCreating(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/animations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          characterId,
+          name: name.trim(),
+          description: description.trim(),
+          style,
+          generationProvider: "openai",
+          generationModel,
+          generationSeconds,
+          generationSize,
+          extractFps,
+          loopMode,
+          sheetColumns,
+          frameCount: expectedFrameCount,
+          fps: extractFps,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data?.error || "Failed to create animation.");
+      }
+
+      const data = await response.json();
+      router.push(`/animations/${data.animation.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create animation.");
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen grid-bg">
+      <Header backHref="/animations" breadcrumb="animations : new">
+        <Button
+          onClick={handleCreate}
+          disabled={!canCreate || isCreating}
+          className="bg-primary hover:bg-primary/80 text-primary-foreground h-7 px-3 text-xs tracking-wider disabled:opacity-40"
+        >
+          {isCreating ? "PROCESSING..." : "CREATE"}
+        </Button>
+      </Header>
+
+      <main className="pt-14 pb-6 px-4">
+        <div className="max-w-5xl mx-auto space-y-4">
+          <div className="grid grid-cols-12 gap-4">
+            <div className="col-span-8 tech-border bg-card">
+              <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+                <span className="text-xs text-muted-foreground tracking-wider">Animation Configuration</span>
+              </div>
+              <div className="p-4 text-xs text-muted-foreground leading-relaxed">
+                Define the motion prompt and video settings. The generation step produces a video from your character reference and extracts sprite frames.
+              </div>
+            </div>
+            <div className="col-span-4 tech-border bg-card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs text-muted-foreground tracking-wider">Status</span>
+                <div className="flex items-center gap-2">
+                  <div className={`status-dot ${canCreate ? "status-dot-online" : "status-dot-warning"}`} />
+                  <span className={`text-xs ${canCreate ? "text-success" : "text-warning"}`}>
+                    {canCreate ? "Ready" : "Incomplete"}
+                  </span>
+                </div>
+              </div>
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Character</span>
+                  <span className={selectedCharacter ? "text-success" : "text-warning"}>
+                    {selectedCharacter ? "Set" : "Required"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Frames</span>
+                  <span>{expectedFrameCount} base</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Looped</span>
+                  <span>{loopedFrameCount} frames</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <section className="space-y-6">
+            <div className="grid lg:grid-cols-[200px,1fr] gap-6 items-start">
+              <div>
+                <p className="text-xs text-muted-foreground tracking-wider mb-1">Target</p>
+                <p className="text-sm font-medium">Character</p>
+              </div>
+              <div>
+                <select
+                  value={characterId}
+                  onChange={(event) => setCharacterId(event.target.value)}
+                  className="terminal-input w-full h-10 px-3 text-sm bg-card"
+                >
+                  <option value="">Select character...</option>
+                  {characters.map((character) => (
+                    <option key={character.id} value={character.id}>
+                      {character.name} ({character.style})
+                    </option>
+                  ))}
+                </select>
+                {characters.length === 0 && (
+                  <p className="text-[10px] text-muted-foreground mt-2">
+                    No characters found. Create one first.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="grid lg:grid-cols-[200px,1fr] gap-6 items-start">
+              <div>
+                <p className="text-xs text-muted-foreground tracking-wider mb-1">Identifier</p>
+                <p className="text-sm font-medium">Animation Name</p>
+              </div>
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="idle_breathing, attack_combo..."
+                className="terminal-input w-full h-10 px-3 text-sm bg-card"
+              />
+            </div>
+
+            <div className="grid lg:grid-cols-[200px,1fr] gap-6 items-start">
+              <div>
+                <p className="text-xs text-muted-foreground tracking-wider mb-1">Description</p>
+                <p className="text-sm font-medium">Action Prompt</p>
+              </div>
+              <textarea
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                rows={4}
+                placeholder="Describe the motion phases and style..."
+                className="terminal-input w-full p-3 text-sm bg-card resize-none"
+              />
+            </div>
+          </section>
+
+          <section className="space-y-4">
+            <div>
+              <p className="text-xs text-muted-foreground tracking-wider mb-1">Animation Style</p>
+              <p className="text-sm font-medium">Preset</p>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              {STYLE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => setStyle(option.value)}
+                  className={`tech-border p-4 text-left transition-all duration-150 ${
+                    style === option.value
+                      ? "border-primary bg-primary/5"
+                      : "hover:border-primary/50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className={style === option.value ? "text-primary text-xs font-medium" : "text-xs font-medium"}>
+                      {option.label}
+                    </span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 border ${
+                        style === option.value
+                          ? "border-primary text-primary"
+                          : "border-border text-muted-foreground"
+                      }`}
+                    >
+                      {option.code}
+                    </span>
+                  </div>
+                  <div className={style === option.value ? "h-1 w-full bg-primary" : "h-1 w-full bg-border"} />
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="tech-border bg-card p-4 space-y-2">
+              <p className="text-xs text-muted-foreground tracking-wider">Model</p>
+              <select
+                value={generationModel}
+                onChange={(event) => {
+                  const nextModel = event.target.value;
+                  const nextSize = isSizeValidForModel(generationSize, nextModel)
+                    ? generationSize
+                    : coerceVideoSizeForModel(generationSize, nextModel);
+                  setGenerationModel(nextModel);
+                  setGenerationSize(nextSize);
+                }}
+                className="terminal-input w-full h-9 px-3 text-sm bg-card"
+              >
+                {MODEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[10px] text-muted-foreground">
+                Draft for fast iteration, pro for higher fidelity.
+              </p>
+            </div>
+
+            <div className="tech-border bg-card p-4 space-y-2">
+              <p className="text-xs text-muted-foreground tracking-wider">Clip Duration</p>
+              <div className="flex flex-wrap gap-2">
+                {VIDEO_SECONDS_OPTIONS.map((value) => (
+                  <button
+                    key={value}
+                    onClick={() => setGenerationSeconds(value)}
+                    className={`px-3 py-1 text-xs border ${
+                      generationSeconds === value
+                        ? "border-primary text-primary"
+                        : "border-border text-muted-foreground hover:border-primary/50"
+                    }`}
+                  >
+                    {value}s
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="tech-border bg-card p-4 space-y-2">
+              <p className="text-xs text-muted-foreground tracking-wider">Video Size</p>
+              <div className="flex flex-wrap gap-2">
+                {sizeOptions.map((size) => (
+                  <button
+                    key={size}
+                    onClick={() => setGenerationSize(size)}
+                    className={`px-3 py-1 text-xs border ${
+                      generationSize === size
+                        ? "border-primary text-primary"
+                        : "border-border text-muted-foreground hover:border-primary/50"
+                    }`}
+                  >
+                    {size}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="tech-border bg-card p-4 space-y-2">
+              <p className="text-xs text-muted-foreground tracking-wider">Extract FPS</p>
+              <div className="flex flex-wrap gap-2">
+                {EXTRACT_FPS_OPTIONS.map((value) => (
+                  <button
+                    key={value}
+                    onClick={() => setExtractFps(value)}
+                    className={`px-3 py-1 text-xs border ${
+                      extractFps === value
+                        ? "border-primary text-primary"
+                        : "border-border text-muted-foreground hover:border-primary/50"
+                    }`}
+                  >
+                    {value} fps
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="tech-border bg-card p-4 space-y-2">
+              <p className="text-xs text-muted-foreground tracking-wider">Loop Mode</p>
+              <div className="flex flex-col gap-2">
+                {LOOP_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    onClick={() => setLoopMode(option.value)}
+                    className={`px-3 py-1 text-xs border text-left ${
+                      loopMode === option.value
+                        ? "border-primary text-primary"
+                        : "border-border text-muted-foreground hover:border-primary/50"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="tech-border bg-card p-4 space-y-2">
+              <p className="text-xs text-muted-foreground tracking-wider">Spritesheet Columns</p>
+              <input
+                type="number"
+                min={2}
+                max={12}
+                value={sheetColumns}
+                onChange={(event) => setSheetColumns(Number(event.target.value) || 6)}
+                className="terminal-input w-full h-9 px-3 text-sm bg-card"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Controls sheet packing for exports.
+              </p>
+            </div>
+          </section>
+
+          <section className="grid md:grid-cols-2 gap-4">
+            <div className="tech-border bg-card p-4 space-y-2">
+              <p className="text-xs text-muted-foreground tracking-wider">Derived Frames</p>
+              <div className="text-2xl font-bold metric-value">
+                {expectedFrameCount}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Ping-pong output: {loopedFrameCount} frames
+              </p>
+            </div>
+            <div className="tech-border bg-card p-4 space-y-2">
+              <p className="text-xs text-muted-foreground tracking-wider">Sprite Frame</p>
+              <div className="text-2xl font-bold metric-value">
+                {frameWidth}×{frameHeight}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Derived from character reference dimensions.
+              </p>
+            </div>
+          </section>
+
+          {error && (
+            <section className="tech-border bg-card p-4 text-xs text-destructive">
+              {error}
+            </section>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+};
+
+export default function NewAnimationPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen grid-bg flex items-center justify-center text-xs text-muted-foreground">LOADING...</div>}>
+      <NewAnimationForm />
+    </Suspense>
+  );
+}
