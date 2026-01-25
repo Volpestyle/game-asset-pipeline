@@ -1,6 +1,7 @@
 import path from "path";
 import { promises as fs } from "fs";
 import { getShutdownSignal } from "@/lib/shutdown";
+import { logger } from "@/lib/logger";
 
 const OPENAI_API_BASE = "https://api.openai.com/v1";
 
@@ -23,6 +24,10 @@ function getApiKey() {
 async function openaiFetch(pathname: string, options: RequestInit = {}) {
   const token = getApiKey();
   const signal = options.signal ?? getShutdownSignal();
+  logger.debug("OpenAI request", {
+    path: pathname,
+    method: options.method ?? "GET",
+  });
   const response = await fetch(`${OPENAI_API_BASE}${pathname}`, {
     ...options,
     signal,
@@ -41,6 +46,11 @@ async function openaiFetch(pathname: string, options: RequestInit = {}) {
     } catch {
       if (errorText) message = errorText;
     }
+    logger.error("OpenAI error response", {
+      path: pathname,
+      status: response.status,
+      message,
+    });
     throw new Error(message);
   }
 
@@ -62,6 +72,15 @@ export async function createVideoJob(options: {
   size: string;
   inputReferencePath?: string | null;
 }) {
+  logger.debug("OpenAI video create", {
+    model: options.model,
+    seconds: options.seconds,
+    size: options.size,
+    prompt: options.prompt,
+    input_reference: options.inputReferencePath
+      ? path.basename(options.inputReferencePath)
+      : undefined,
+  });
   const form = new FormData();
   form.append("model", options.model);
   form.append("prompt", options.prompt);
@@ -81,14 +100,23 @@ export async function createVideoJob(options: {
     body: form,
   });
 
-  return (await response.json()) as OpenAIVideoJob;
+  const json = (await response.json()) as OpenAIVideoJob;
+  logger.info("OpenAI video created", {
+    id: json.id,
+    status: json.status,
+    progress: json.progress ?? undefined,
+    expires_at: json.expires_at ?? undefined,
+  });
+  return json;
 }
 
 export async function getVideoJob(videoId: string) {
   const response = await openaiFetch(`/videos/${videoId}`, {
     method: "GET",
   });
-  return (await response.json()) as OpenAIVideoJob;
+  const json = (await response.json()) as OpenAIVideoJob;
+  logger.debug("OpenAI video status", json);
+  return json;
 }
 
 export async function pollVideoJob(options: {
@@ -128,7 +156,11 @@ export async function downloadVideoContent(options: {
     `/videos/${options.videoId}/content${params}`,
     { method: "GET" }
   );
+  logger.info("OpenAI download content", {
+    videoId: options.videoId,
+    variant: options.variant ?? "video",
+    contentLength: response.headers.get("content-length") ?? undefined,
+  });
   const buffer = Buffer.from(await response.arrayBuffer());
   return buffer;
 }
-

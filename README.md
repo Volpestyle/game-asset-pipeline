@@ -112,6 +112,8 @@ RD_FAST_MODEL=             # Replicate rd-fast model (optional, defaults to retr
 RD_FAST_VERSION=           # Replicate rd-fast version (optional)
 RD_PLUS_MODEL=             # Replicate rd-plus model (optional, defaults to retro-diffusion/rd-plus)
 RD_PLUS_VERSION=           # Replicate rd-plus version (optional)
+LOG_LEVEL=                 # Log level: debug | info | warn | error (default: info)
+LOG_COLOR=                 # Enable ANSI colors in logs (default: true)
 ```
 
 ## Local Storage (MVP)

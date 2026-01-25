@@ -1,4 +1,5 @@
 import { getShutdownSignal } from "@/lib/shutdown";
+import { logger } from "@/lib/logger";
 
 const REPLICATE_API_BASE = "https://api.replicate.com/v1";
 const modelVersionCache = new Map<string, string>();
@@ -26,6 +27,10 @@ function getAuthToken() {
 async function request(path: string, options: RequestInit = {}) {
   const token = getAuthToken();
   const signal = options.signal ?? getShutdownSignal();
+  logger.debug("Replicate request", {
+    path,
+    method: options.method ?? "GET",
+  });
   const response = await fetch(`${REPLICATE_API_BASE}${path}`, {
     ...options,
     signal,
@@ -38,6 +43,11 @@ async function request(path: string, options: RequestInit = {}) {
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
+    logger.error("Replicate error response", {
+      path,
+      status: response.status,
+      message: data?.detail || data?.error,
+    });
     throw new Error(data?.detail || data?.error || "Replicate request failed.");
   }
 
@@ -80,6 +90,11 @@ export async function createPrediction(body: {
   model?: string;
   input: Record<string, unknown>;
 }): Promise<ReplicatePrediction> {
+  logger.debug("Replicate create prediction", {
+    model: body.model,
+    version: body.version,
+    input: body.input,
+  });
   const model = normalizeEnvValue(body.model);
   const requestedVersion = normalizeEnvValue(body.version);
   let version = requestedVersion;
@@ -95,23 +110,38 @@ export async function createPrediction(body: {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("does not expose a list of versions")) {
         const { owner, name } = parseModel(model);
-        return request(`/models/${owner}/${name}/predictions`, {
+        const response = await request(`/models/${owner}/${name}/predictions`, {
           method: "POST",
           body: JSON.stringify({ input: body.input }),
         });
+        logger.info("Replicate prediction started", {
+          id: response?.id,
+          status: response?.status,
+        });
+        return response;
       }
       throw err;
     }
   }
 
-  return request("/predictions", {
+  const response = await request("/predictions", {
     method: "POST",
     body: JSON.stringify({ version, input: body.input }),
   });
+  logger.info("Replicate prediction started", {
+    id: response?.id,
+    status: response?.status,
+  });
+  return response;
 }
 
 export async function getPrediction(id: string): Promise<ReplicatePrediction> {
-  return request(`/predictions/${id}`);
+  const prediction = await request(`/predictions/${id}`);
+  logger.debug("Replicate prediction status", {
+    id: prediction?.id,
+    status: prediction?.status,
+  });
+  return prediction;
 }
 
 export async function waitForPrediction(id: string, timeoutMs = 5 * 60 * 1000) {
@@ -124,9 +154,15 @@ export async function waitForPrediction(id: string, timeoutMs = 5 * 60 * 1000) {
     }
     const prediction = await getPrediction(id);
     if (prediction.status === "succeeded") {
+      logger.info("Replicate prediction complete", { id, status: prediction.status });
       return prediction;
     }
     if (prediction.status === "failed" || prediction.status === "canceled") {
+      logger.error("Replicate prediction failed", {
+        id,
+        status: prediction.status,
+        error: prediction.error ?? undefined,
+      });
       throw new Error(prediction.error || "Replicate prediction failed.");
     }
     if (Date.now() - start > timeoutMs) {
