@@ -21,9 +21,9 @@
 │                           API ROUTES (Next.js)                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  /api/characters     /api/animations    /api/generate      /api/export     │
-│  - POST upload       - POST create      - POST frames      - POST sheet    │
-│  - GET list          - PUT update       - GET status       - GET download  │
-│  - GET [id]          - GET [id]                                            │
+│  - POST upload       - POST create      - POST async job   - POST bundle   │
+│  - GET list          - PUT update       - (poll /animations/:id)           │
+│  - GET [id]          - GET [id]        /api/animations/:id/rebuild         │
 └─────────────────────────────────────────────────────────────────────────────┘
           │                  │                  │                  │
           ▼                  ▼                  ▼                  ▼
@@ -34,9 +34,9 @@
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐          │
 │  │ CharacterService │  │ AnimationService │  │  ExportService   │          │
 │  │                  │  │                  │  │                  │          │
-│  │ - createIdentity │  │ - parseTimeline  │  │ - toPNG          │          │
+│  │ - createIdentity │  │ - parseTimeline  │  │ - toFrames       │          │
 │  │ - extractFeatures│  │ - validateFrames │  │ - toSpritesheet  │          │
-│  │ - storeRefs      │  │ - buildPrompts   │  │ - toAnimatedWebP │          │
+│  │ - storeRefs      │  │ - buildPrompts   │  │ - toAsepriteJson │          │
 │  └────────┬─────────┘  └────────┬─────────┘  └──────────────────┘          │
 │           │                     │                                           │
 │           └──────────┬──────────┘                                           │
@@ -57,11 +57,10 @@
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐        │
-│  │    Replicate     │  │      Fal.ai      │  │      Gemini      │        │
+│  │     OpenAI       │  │    Replicate     │  │  Optional/Planned│        │
 │  │                  │  │                  │  │                  │        │
-│  │ - IP-Adapter     │  │ - Fast inference │  │ - Image analysis │        │
-│  │ - AnimateDiff    │  │ - img2img        │  │ - Style detection│        │
-│  │ - SDXL img2img   │  │                  │  │ - Understanding  │        │
+│  │ - Sora Video API │  │ - rd-fast/plus   │  │ - Fal.ai         │        │
+│  │ - image→video    │  │ - rd-animation   │  │ - Gemini         │        │
 │  └──────────────────┘  └──────────────────┘  └──────────────────┘        │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -70,87 +69,84 @@
 ## Core Types
 
 ```typescript
-// Character identity extracted from reference images
 interface Character {
   id: string;
   name: string;
   referenceImages: ReferenceImage[];
-  identityEmbedding?: string; // Path to IP-Adapter embedding or similar
   style: ArtStyle;
-  createdAt: Date;
-  updatedAt: Date;
+  baseWidth?: number;
+  baseHeight?: number;
+  workingReference?: { url: string; width: number; height: number; createdAt: string };
+  workingSpec?: {
+    canvasW: number;
+    canvasH: number;
+    scale: number;
+    roi: { x: number; y: number; w: number; h: number };
+    bgKeyColor: string;
+  };
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface ReferenceImage {
   id: string;
   url: string;
-  type: 'front' | 'side' | 'back' | 'detail' | 'action';
+  type: "front" | "side" | "back" | "detail" | "action" | "other";
   isPrimary: boolean;
 }
 
-type ArtStyle = 'pixel-art' | 'hand-drawn' | '3d-rendered' | 'anime' | 'realistic' | 'custom';
+type ArtStyle =
+  | "pixel-art"
+  | "hand-drawn"
+  | "3d-rendered"
+  | "anime"
+  | "realistic"
+  | "custom";
 
-// Animation configuration
 interface Animation {
   id: string;
   characterId: string;
+  referenceImageId?: string | null;
   name: string;
-  description: string; // "walk cycle", "sword slash", etc.
+  description: string;
   frameCount: number;
   fps: number;
+  style: AnimationStyle;
+  frameWidth?: number;
+  frameHeight?: number;
+  generationProvider?: "openai" | "replicate";
+  generationModel?: string;
+  generationSeconds?: number;
+  generationSize?: string;
+  extractFps?: number;
+  loopMode?: "loop" | "pingpong";
+  sheetColumns?: number;
+  generationJob?: GenerationJob;
+  sourceVideoUrl?: string;
+  sourceProviderSpritesheetUrl?: string;
+  sourceThumbnailUrl?: string;
   keyframes: Keyframe[];
   generatedFrames: GeneratedFrame[];
-  status: 'draft' | 'generating' | 'complete' | 'failed';
-  createdAt: Date;
+  status: "draft" | "generating" | "complete" | "failed";
+  generatedSpritesheet?: string;
+  spritesheetLayout?: SpritesheetLayout;
+  exports?: Record<string, string | undefined>;
+  actualFrameCount?: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
-interface Keyframe {
-  frameIndex: number; // 0-based position in timeline
-  image?: string; // URL to user-provided keyframe image
-  prompt?: string; // Additional prompt for this specific frame
-}
-
-interface GeneratedFrame {
-  frameIndex: number;
-  url: string;
-  isKeyframe: boolean;
-  generatedAt: Date;
-}
-
-// Generation request
-interface GenerationRequest {
-  characterId: string;
-  animationId: string;
-  mode: 'frame-by-frame' | 'video-to-frames';
-  options: GenerationOptions;
-}
-
-interface GenerationOptions {
-  strength: number; // How much to deviate from keyframes (0-1)
-  style_fidelity: number; // How closely to match character style (0-1)
-  motion_smoothness: number; // For video mode, smoothness of motion (0-1)
-}
-
-// Export configuration
-interface ExportConfig {
-  format: 'png-sequence' | 'spritesheet' | 'webp' | 'apng';
-  scale: number; // Output scale multiplier
-  padding: number; // For spritesheet, padding between frames
-  includeMetadata: boolean; // Generate JSON metadata
-}
-
-interface SpritesheetMetadata {
-  frames: {
-    [key: string]: {
-      frame: { x: number; y: number; w: number; h: number };
-      sourceSize: { w: number; h: number };
-      duration: number; // in milliseconds
-    };
-  };
-  meta: {
-    image: string;
-    size: { w: number; h: number };
-    frameRate: number;
+interface GenerationJob {
+  provider: string;
+  providerJobId: string;
+  status: "queued" | "in_progress" | "completed" | "failed" | "canceled";
+  progress?: number;
+  expiresAt?: string;
+  error?: string;
+  outputs?: {
+    videoUrl?: string;
+    spritesheetUrl?: string;
+    thumbnailUrl?: string;
   };
 }
 ```
@@ -163,17 +159,17 @@ storage/
 ├── characters/
 │   └── {characterId}/
 │       ├── references/
-│       │   ├── ref_001.png
-│       │   └── ref_002.png
-│       └── identity.json
+│       ├── working/
+│       ├── character.json
+│       └── reference_*.png
 └── animations/
     └── {animationId}/
         ├── keyframes/
         │   └── frame_005.png
         ├── generated/
-        │   ├── frame_000.png
-        │   ├── frame_001.png
-        │   └── ...
+        │   ├── frames_raw/
+        │   ├── frames/
+        │   └── spritesheet_*.png
         └── exports/
             ├── spritesheet.png
             └── spritesheet.json
@@ -186,29 +182,20 @@ storage/
 
 ## AI Integration Strategy
 
-### Primary: Replicate
+### Primary: OpenAI (Sora Video API)
 
-**For Character Consistency:**
-- IP-Adapter: Condition generation on reference images
-- Model: `tencentarc/ip-adapter-sdxl` or similar
+- Image → video → frames pipeline
+- Async job creation, polling, download of MP4 (+ optional spritesheet/thumbnail)
+- Working reference uses magenta key background for easy transparency keying
 
-**For Frame Generation:**
-- img2img with ControlNet for pose guidance
-- Model: SDXL-based with appropriate LoRA for art style
+### Secondary: Replicate
 
-**For Video Generation:**
-- AnimateDiff for smooth motion
-- Model: `lucataco/animate-diff` or `stability-ai/stable-video-diffusion`
+- rd-fast / rd-plus for keyframe interpolation
+- rd-animation as legacy fallback spritesheet generation
 
-### Fallback: Fal.ai
-- Similar capabilities, different infrastructure
-- Good for A/B testing quality
+### Optional/Planned
 
-### Analysis: Gemini API
-- Image understanding and description
-- Automatic style detection from references
-- Character feature extraction for prompts
-- Can analyze uploaded refs to suggest optimal generation params
+- Fal.ai and Gemini integrations are not wired in but referenced for future experiments.
 
 ### Generation Pipeline
 

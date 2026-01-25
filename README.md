@@ -41,7 +41,7 @@ Upload character reference images → Define animation parameters → Generate c
 ### Export Options
 - Individual PNG frames
 - Spritesheet + JSON metadata (frame positions, dimensions, timing)
-- Animated WebP/APNG
+- ZIP bundle with spritesheet + metadata + frames
 - Ready for web (React) and mobile (React Native/Expo)
 
 ## Tech Stack
@@ -50,9 +50,7 @@ Upload character reference images → Define animation parameters → Generate c
 - **Styling**: Tailwind CSS + shadcn/ui
 - **AI Backend**:
   - Primary: OpenAI Sora Video API (image → video → frames)
-  - Secondary: Replicate (rd-animation, rd-fast/rd-plus for keyframes)
-  - Optional: Fal.ai
-  - Analysis: Gemini API (image understanding, style detection)
+  - Secondary: Replicate (rd-animation legacy fallback, rd-fast/rd-plus for keyframe interpolation)
 - **Storage**: Local filesystem (MVP), S3-compatible (future)
 
 ## Project Structure
@@ -71,8 +69,9 @@ src/
 │   └── export/            # Export functionality
 ├── lib/
 │   ├── ai/                # AI provider integrations
+│   │   ├── openai.ts
 │   │   ├── replicate.ts
-│   │   └── fal.ts
+│   │   └── soraConstraints.ts
 │   ├── character/         # Character identity logic
 │   ├── animation/         # Animation generation logic
 │   └── export/            # Export utilities (spritesheet, etc.)
@@ -104,8 +103,8 @@ npm run dev
 ```
 OPENAI_API_KEY=            # OpenAI API key (Sora video generation)
 REPLICATE_API_TOKEN=       # Replicate API token
-FAL_KEY=                   # Fal.ai API key (optional)
-GOOGLE_AI_API_KEY=         # Gemini API key (optional, for image analysis)
+FAL_KEY=                   # Fal.ai API key (planned/unused)
+GOOGLE_AI_API_KEY=         # Gemini API key (planned/unused)
 RD_ANIMATION_VERSION=      # Replicate rd-animation model version (optional)
 RD_ANIMATION_MODEL=        # Replicate rd-animation model (optional, defaults to retro-diffusion/rd-animation)
 RD_FAST_MODEL=             # Replicate rd-fast model (optional, defaults to retro-diffusion/rd-fast)
@@ -120,8 +119,16 @@ Assets and metadata are stored locally under:
 
 ```
 storage/
-├── characters/{id}/references
-└── animations/{id}/{generated,exports,keyframes}
+├── characters/{id}/character.json
+├── characters/{id}/references/
+├── characters/{id}/working/            # working reference + spec JSON
+└── animations/{id}/
+    ├── animation.json
+    ├── generated/
+    │   ├── frames_raw/                 # extracted frames (pre-loop)
+    │   └── frames/                     # final frames (loop applied)
+    ├── exports/
+    └── keyframes/
 ```
 
 Generated files are served via `/api/storage/...` for local preview.
@@ -130,12 +137,14 @@ Generated files are served via `/api/storage/...` for local preview.
 
 ### Video-to-Frames (default)
 - Default model: `sora-2`
-- Video size: `1024x1792`
+- Video size: `720x1280` (sora-2 default). `sora-2-pro` also supports `1024x1792` and `1792x1024`.
 - Duration: 4 seconds
 - Extract FPS: 6
 - Loop mode: ping-pong
 - Frame size derived from character reference (default 253×504)
+- Invalid sizes are automatically coerced to a supported size for the selected model
 - If `OPENAI_API_KEY` is missing, generation will fail (fallback still available via Replicate)
+- Rebuild: you can re-pack spritesheets from `frames_raw` without re-running generation
 
 ### Replicate fallback (legacy)
 - `retro-diffusion/rd-animation` generates a spritesheet directly
@@ -171,27 +180,27 @@ The export endpoint produces:
 ### Phase 1: Foundation (Current)
 - [x] Project setup and documentation
 - [x] Character upload and management UI
-- [ ] Basic character identity storage
+- [x] Basic character identity storage
 
 ### Phase 2: Animation Editor
-- [ ] Timeline-based animation configurator
-- [ ] Keyframe placement
-- [ ] Animation preview
+- [x] Timeline-based animation configurator
+- [x] Keyframe placement
+- [x] Animation preview
 
 ### Phase 3: AI Generation
-- [ ] Replicate integration
-- [ ] Frame-by-frame generation
-- [ ] Video-to-frames generation
+- [x] Replicate integration
+- [x] Frame-by-frame generation
+- [x] Video-to-frames generation
 
 ### Phase 4: Export & Polish
-- [ ] Export to multiple formats
-- [ ] Spritesheet generation with metadata
+- [x] Export to multiple formats
+- [x] Spritesheet generation with metadata
 - [ ] Mobile-ready exports
 
 ## Key Concepts
 
 ### Character Identity
-A character identity captures the visual essence of a character from reference images. This is used to maintain consistency when generating new frames/poses. Implemented using techniques like IP-Adapter or similar reference-image conditioning.
+A character identity captures the visual essence of a character from reference images. The current pipeline enforces consistency via a working reference canvas and prompt constraints; advanced conditioning (e.g., IP-Adapter) is a possible future enhancement.
 
 ### Keyframes
 User-provided frames that act as "anchors" in the animation. The AI generates intermediate frames that smoothly transition between keyframes while maintaining character identity.
@@ -200,7 +209,7 @@ User-provided frames that act as "anchors" in the animation. The AI generates in
 ```
 Character Identity + Animation Description + Keyframes
                           ↓
-              AI Generation (Replicate/Fal)
+              AI Generation (OpenAI/Replicate)
                           ↓
                    Raw Generated Frames
                           ↓

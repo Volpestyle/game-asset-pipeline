@@ -8,19 +8,52 @@ This document details the AI models and integration strategies for generating an
 
 The core technical challenge is maintaining character visual identity across generated frames. A character should look like *themselves* in every frame, not just "a similar character."
 
-### Solution: IP-Adapter + Reference Conditioning
+### Solution (Current): Working Reference + Prompt Constraints
 
-IP-Adapter allows us to condition image generation on reference images, essentially telling the AI "generate an image that looks like THIS character."
+The current pipeline keeps identity by generating a “working reference” canvas
+from the uploaded sprite (scaled with nearest-neighbor), then strongly constraining
+the prompt (static camera, centered character, crisp pixel edges, magenta background).
+
+**Future enhancement**: IP-Adapter or similar reference-conditioning models could
+further lock identity across frames.
 
 ## AI Providers Overview
 
 | Provider | Role | Use Case |
 |----------|------|----------|
-| Replicate | Primary generation | Frame generation, video-to-frames, IP-Adapter |
-| Fal.ai | Secondary/fallback | Fast inference, A/B testing |
-| Gemini | Analysis | Image understanding, style detection, prompt optimization |
+| OpenAI | Primary generation | Image → video → frames (Sora) |
+| Replicate | Secondary generation | Keyframe interpolation (rd-fast/rd-plus), legacy spritesheet fallback |
+| Fal.ai | Planned/optional | Fast inference experiments (not wired in) |
+| Gemini | Planned/optional | Image understanding, style detection (not wired in) |
 
-## Gemini API (Analysis & Understanding)
+## OpenAI Video API (Primary)
+
+**Purpose**: Generate a short video from a reference image + motion prompt, then extract frames.
+
+**Usage (current code)**:
+```typescript
+// lib/ai/openai.ts
+const job = await createVideoJob({
+  prompt,
+  model: "sora-2" | "sora-2-pro",
+  seconds: 4 | 8 | 12,
+  size: "720x1280" | "1280x720" | "1024x1792" | "1792x1024",
+  inputReferencePath,
+});
+
+const finalJob = await pollVideoJob({ videoId: job.id });
+const videoBuffer = await downloadVideoContent({ videoId: job.id });
+```
+
+**Notes**:
+- `sora-2` supports `720x1280` and `1280x720`.
+- `sora-2-pro` also supports `1024x1792` and `1792x1024`.
+- The app will auto-coerce invalid sizes to a supported size.
+- The pipeline uses a “working reference” canvas with a magenta key background so frames can be keyed out.
+
+---
+
+## Gemini API (Analysis & Understanding) — Planned
 
 **Purpose**: Analyze uploaded references to extract character details, detect art style, and optimize generation prompts.
 
@@ -61,72 +94,33 @@ export async function analyzeCharacterReference(imageUrl: string) {
 
 ---
 
-## Replicate Models
+## Replicate Models (Current Usage)
 
-### 1. IP-Adapter (Character Consistency)
+### 1. rd-animation (Legacy fallback)
 
-**Model**: `tencentarc/ip-adapter-sdxl` or similar
+**Model**: `retro-diffusion/rd-animation`
 
-**Purpose**: Condition generation on character reference images
+**Purpose**: Generate a spritesheet directly (used only if OpenAI is not selected or unavailable).
 
-**Usage**:
-```typescript
-const output = await replicate.run(
-  "tencentarc/ip-adapter-sdxl:...",
-  {
-    input: {
-      prompt: "character walking, side view, pixel art style",
-      image: characterReferenceUrl,
-      scale: 0.7, // How strongly to apply the reference
-      // ...other params
-    }
-  }
-);
-```
+### 2. rd-fast (Keyframe interpolation)
 
-### 2. AnimateDiff (Video Generation)
+**Model**: `retro-diffusion/rd-fast`
 
-**Model**: `lucataco/animate-diff` or `stability-ai/stable-video-diffusion`
+**Purpose**: Fast in-between frame refinement between user keyframes.
 
-**Purpose**: Generate smooth animation videos from a single image + motion prompt
+### 3. rd-plus (Keyframe interpolation)
 
-**Usage**:
-```typescript
-const output = await replicate.run(
-  "lucataco/animate-diff:...",
-  {
-    input: {
-      prompt: "character performing walk cycle animation",
-      image: keyframeImage,
-      motion_module: "mm_sd_v15_v2",
-      frames: 16,
-      // ...other params
-    }
-  }
-);
-// Returns video URL, needs frame extraction
-```
+**Model**: `retro-diffusion/rd-plus`
 
-### 3. SDXL img2img (Frame-by-Frame)
+**Purpose**: Higher fidelity in-between frame refinement.
 
-**Model**: Various SDXL models on Replicate
+---
 
-**Purpose**: Generate individual frames with fine control
+## Replicate Ideas (Planned / Optional)
 
-**Usage**:
-```typescript
-const output = await replicate.run(
-  "stability-ai/sdxl:...",
-  {
-    input: {
-      prompt: "character mid-step walking pose, frame 5 of 8",
-      image: previousFrameOrKeyframe,
-      prompt_strength: 0.6, // Lower = closer to input image
-      // ...other params
-    }
-  }
-);
-```
+- IP-Adapter for tighter character consistency
+- AnimateDiff for alternate video generation
+- SDXL img2img for per-frame control
 
 ## Generation Strategies
 
@@ -142,9 +136,9 @@ Keyframe 0 ───────────────────────
      │         │         │               │         │
      └─────────┴─────────┴───────────────┴─────────┘
                          │
-              IP-Adapter conditioning
+              rd-fast/rd-plus interpolation
               + progressive prompt changes
-              + img2img from nearest keyframe
+              + keyframe blending
 ```
 
 **Algorithm**:
@@ -166,12 +160,11 @@ async function generateFrameByFrame(
     // Build frame-specific prompt
     const prompt = buildFramePrompt(animation.description, i, animation.frameCount, t);
 
-    // Generate frame
-    const frame = await generateWithIPAdapter({
-      characterRef: character.referenceImages[0].url,
-      baseImage: prevKeyframe?.image || frames[i - 1]?.url,
+    // Generate in-between frame (rd-fast/rd-plus)
+    const frame = await generateWithReplicate({
+      baseImage: blendKeyframes(prevKeyframe?.image, nextKeyframe?.image, t),
       prompt,
-      strength: 0.4 + (t * 0.3), // More freedom in the middle
+      strength: 0.2 + (t * 0.2),
     });
 
     frames.push(frame);
@@ -181,7 +174,7 @@ async function generateFrameByFrame(
 }
 ```
 
-### Strategy 2: Video Generation + Frame Extraction
+### Strategy 2: Video Generation + Frame Extraction (current default)
 
 Best for: Fluid motion, natural movement (walks, runs, flowing animations)
 
@@ -190,8 +183,8 @@ Single Keyframe + Motion Prompt
               │
               ▼
      ┌─────────────────┐
-     │   AnimateDiff   │
-     │  or SVD model   │
+     │      Sora       │
+     │ (OpenAI Video)  │
      └────────┬────────┘
               │
               ▼
@@ -217,16 +210,13 @@ async function generateVideoToFrames(
   const seedImage = animation.keyframes[0]?.image
     || character.referenceImages[0].url;
 
-  // Generate video
-  const videoUrl = await generateVideo({
-    image: seedImage,
-    prompt: `${animation.description}, smooth animation, consistent character`,
-    frames: animation.frameCount,
-    fps: animation.fps,
-  });
+  // Generate video (OpenAI Sora)
+  const job = await createVideoJob({ prompt, model, seconds, size, inputReferencePath });
+  await pollVideoJob({ videoId: job.id });
+  const videoBuffer = await downloadVideoContent({ videoId: job.id });
 
-  // Extract frames from video
-  const frames = await extractFramesFromVideo(videoUrl, animation.frameCount);
+  // Extract frames from video (ffmpeg), then key out magenta and pack spritesheet
+  const frames = await extractFramesFromVideo(videoBuffer, animation.extractFps);
 
   return frames;
 }
@@ -237,7 +227,7 @@ async function generateVideoToFrames(
 Combine both for best results:
 
 1. Use video generation for smooth motion base
-2. Use frame-by-frame refinement with IP-Adapter to fix character consistency issues
+2. Use keyframe interpolation (rd-fast/rd-plus) to refine specific frames
 3. User can mark frames that need "fixing" and regenerate those specifically
 
 ## Prompt Engineering
@@ -277,82 +267,40 @@ const attackPhases = [
 
 ## API Integration Code
 
-### Replicate Client Setup
+### OpenAI Client Setup (Current)
 
 ```typescript
-// lib/ai/replicate.ts
-import Replicate from "replicate";
-
-const replicate = new Replicate({
-  auth: process.env.REPLICATE_API_TOKEN,
+// lib/ai/openai.ts (excerpt)
+const job = await createVideoJob({
+  model: "sora-2",
+  prompt,
+  seconds: 4,
+  size: "720x1280",
+  inputReferencePath,
 });
 
-export async function generateFrame(options: {
-  characterRef: string;
-  prompt: string;
-  baseImage?: string;
-  strength?: number;
-}): Promise<string> {
-  const output = await replicate.run(
-    "tencentarc/ip-adapter-sdxl:...",
-    {
-      input: {
-        prompt: options.prompt,
-        image: options.characterRef,
-        // ...
-      }
-    }
-  );
-
-  return output as string;
-}
-
-export async function generateAnimationVideo(options: {
-  seedImage: string;
-  prompt: string;
-  frames: number;
-  fps: number;
-}): Promise<string> {
-  const output = await replicate.run(
-    "lucataco/animate-diff:...",
-    {
-      input: {
-        prompt: options.prompt,
-        image: options.seedImage,
-        frames: options.frames,
-        // ...
-      }
-    }
-  );
-
-  return output as string;
-}
+await pollVideoJob({ videoId: job.id });
+const videoBuffer = await downloadVideoContent({ videoId: job.id });
 ```
 
-### Fal.ai Client Setup (Alternative)
+### Replicate Client Setup (Keyframes)
 
 ```typescript
-// lib/ai/fal.ts
-import * as fal from "@fal-ai/serverless-client";
-
-fal.config({
-  credentials: process.env.FAL_KEY,
+// lib/ai/replicate.ts (excerpt)
+const prediction = await runReplicateModel({
+  model: "retro-diffusion/rd-plus",
+  input: {
+    prompt,
+    input_image: dataUrl,
+    strength: 0.25,
+  },
 });
-
-export async function generateWithFal(options: {
-  prompt: string;
-  imageUrl: string;
-}): Promise<string> {
-  const result = await fal.subscribe("fal-ai/fast-sdxl", {
-    input: {
-      prompt: options.prompt,
-      image_url: options.imageUrl,
-    },
-  });
-
-  return result.images[0].url;
-}
 ```
+
+### Fal.ai Client Setup (Planned)
+
+Fal is not wired into the current app, but the repo keeps links and placeholders
+for future experimentation.
 
 ## Error Handling & Retries
 
@@ -383,12 +331,7 @@ async function generateWithRetry<T>(
 
 ## Cost Considerations
 
-- Replicate charges per second of compute time
-- IP-Adapter runs are typically $0.01-0.05 per generation
-- AnimateDiff can be $0.10-0.50 per video depending on length
-- Budget ~$0.50-2.00 per complete animation (8-16 frames)
-
-Consider:
-- Caching successful generations
-- Allowing users to regenerate specific frames vs entire animation
-- Quality presets (fast/cheap vs slow/quality)
+- OpenAI video jobs are billed per output size and duration.
+- Replicate keyframe runs are billed per compute.
+- Keep frames cached and allow partial rebuilds (e.g., spritesheet rebuild from raw frames)
+  to avoid unnecessary re-generation.

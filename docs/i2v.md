@@ -22,7 +22,9 @@ Stage B — AI video generation (async job)
 
 Your backend calls POST /v1/videos with:
 	•	model: sora-2 (drafts) or sora-2-pro (final)
-	•	size: 1024x1792 (portrait high-res) or 720x1280 (portrait lower-res)
+	•	size:
+		•	sora-2 → 720x1280 or 1280x720
+		•	sora-2-pro → 720x1280, 1280x720, 1024x1792, 1792x1024
 	•	seconds: 4 | 8 | 12
 	•	input_reference: your working reference image (first-frame guidance)  ￼
 
@@ -33,8 +35,9 @@ Stage C — Frame extraction + “pixel enforcement”
 After the job completes, your worker:
 	1.	downloads the MP4 (and optionally the spritesheet/thumbnail)  ￼
 	2.	extracts frames at your desired sprite FPS (e.g., 6–12 fps)
-	3.	crops the character region, scales down to 253×504, disables smoothing (nearest neighbor), optionally enforces palette and transparency
+	3.	crops the character region, scales down to 253×504, disables smoothing (nearest neighbor), keys out magenta for transparency
 	4.	packs frames into a looping spritesheet + exports metadata JSON
+	5.	stores raw frames in frames_raw so loop mode can be rebuilt without re-generating
 
 Stage D — Animation editor UI
 
@@ -52,30 +55,31 @@ Then provides:
 
 2) Recommended “working resolution” for your 253×504 sprite
 
-Sora’s size currently allows:
-720x1280, 1280x720, 1024x1792, 1792x1024  ￼
+Sora size support depends on the model:
 
-Your sprite is portrait (253/504 ≈ 0.502), so pick 1024×1792 (portrait) for best quality.
+- sora-2: 720x1280, 1280x720
+- sora-2-pro: 720x1280, 1280x720, 1024x1792, 1792x1024
 
-Key trick: use an integer scale factor to preserve pixel edges
+Your sprite is portrait (253/504 ≈ 0.502), so for **sora-2** the best portrait choice is **720×1280**.
 
-Find max integer k such that:
-	•	253*k <= 1024
-	•	504*k <= 1792
+Key trick: use an integer scale factor to preserve pixel edges.
 
-k=3 works:
-	•	253×3 = 759
-	•	504×3 = 1512
+For 720×1280, find max integer k such that:
+	•	253*k <= 720
+	•	504*k <= 1280
+
+k=2 works:
+	•	253×2 = 506
+	•	504×2 = 1008
 
 So your “working reference image” is:
-	•	canvas: 1024×1792
-	•	your sprite scaled to 759×1512 (nearest neighbor)
+	•	canvas: 720×1280
+	•	your sprite scaled to 506×1008 (nearest neighbor)
 	•	placed centered on the canvas
-	•	optionally on a solid chroma key background
+	•	on a solid magenta key background
 
-This makes the reverse transform exact:
-	•	crop 759×1512
-	•	scale down by 3 → 253×504 exactly
+If you use **sora-2-pro**, 1024×1792 is also valid (k=3 → 759×1512).  
+The app auto-coerces invalid sizes to a supported size and builds the working reference for you.
 
 ⸻
 
@@ -131,28 +135,29 @@ Animation
 	•	id
 	•	characterId
 	•	name
-	•	actionDescription
+	•	description
 	•	settings:
 	•	provider: "openai"
 	•	model: "sora-2" | "sora-2-pro"
 	•	seconds: 4 | 8 | 12  ￼
-	•	size: "1024x1792"  ￼
+	•	size: model-specific (auto-coerced)
 	•	extractFps: 6 | 8 | 12
 	•	loopMode: "loop" | "pingpong"
-	•	columns (spritesheet packing)
+	•	sheetColumns (spritesheet packing)
+	•	frameWidth / frameHeight (derived from reference)
+	•	sourceVideoUrl / sourceProviderSpritesheetUrl / sourceThumbnailUrl
+	•	generationNote (e.g., size coercions, errors)
 
 GenerationJob
-	•	id
-	•	animationId
 	•	status: queued | in_progress | completed | failed
 	•	progress (0–100)
 	•	providerJobId (e.g. video_...)
 	•	expiresAt (from video job metadata)  ￼
+	•	error (if failed)
 	•	outputs:
 	•	videoMp4Url
 	•	spritesheetUrl
-	•	metaJsonUrl
-	•	frameThumbs[]
+	•	thumbnailUrl
 
 ⸻
 
@@ -169,12 +174,17 @@ Why a worker?
 Video generation is async and can take minutes. The Sora docs explicitly describe create → poll/webhook → download.  ￼
 You don’t want your UI request to sit open.
 
+**Current app behavior**: `POST /api/generate` starts an async job in-process and the UI polls
+`/api/animations/:id` while `status=generating`. A dedicated worker/queue is a future upgrade.
+
 Status updates to the UI
 
-Pick one:
-	•	Polling GET /jobs/:id every 1–2s
-	•	SSE GET /jobs/:id/events (simple)
-	•	WebSocket (best UX)
+Current app:
+	•	Poll `/api/animations/:id` every ~2s while status=generating
+
+Future options:
+	•	SSE
+	•	WebSocket
 	•	Provider webhooks → your server → push to client
 Sora docs recommend webhooks as a more efficient approach than polling the provider.  ￼
 
@@ -191,13 +201,11 @@ Character flows
 
 Animation flows
 	•	POST /animations
-	•	{ characterId, name, actionDescription, settings }
+	•	{ characterId, name, description, settings }
 	•	GET /animations/:id
-	•	POST /animations/:id/generate
-	•	creates GenerationJob and enqueues worker task
-	•	GET /jobs/:jobId
-	•	GET /jobs/:jobId/frames (optional)
-	•	GET /animations/:id/export
+	•	POST /generate
+	•	POST /animations/:id/rebuild (repack spritesheet from raw frames)
+	•	POST /export
 	•	returns spritesheet + json URLs
 
 ⸻
@@ -211,7 +219,7 @@ Sora video generation uses POST /v1/videos, and you either poll GET /v1/videos/{
 Parameters you’ll likely set:
 	•	model: sora-2 (fast iteration) vs sora-2-pro (final quality)  ￼
 	•	seconds: 4 | 8 | 12  ￼
-	•	size: 1024x1792  ￼
+	•	size: model-specific (see section 2)  ￼
 	•	input_reference file  ￼
 
 7.2 Download assets before they expire
@@ -229,9 +237,9 @@ Even if you plan to build your own spritesheet, grabbing the official spriteshee
 7.3 Extract frames with ffmpeg (crop → downscale → nearest)
 
 Assuming:
-	•	input: 1024×1792 MP4
-	•	ROI: x=132, y=140, w=759, h=1512 (centered)
-	•	output: 253×504
+	•	input: 720×1280 MP4
+	•	ROI: x=107, y=136, w=506, h=1008 (centered, k=2)
+	•	output: 253×504 (scale down by 2)
 
 Example ffmpeg filter chain:
 	•	crop ROI
@@ -241,7 +249,7 @@ Example ffmpeg filter chain:
 Conceptually:
 
 ffmpeg -i input.mp4 \
-  -vf "crop=759:1512:132:140,scale=253:504:flags=neighbor,fps=8" \
+  -vf "crop=506:1008:107:136,scale=253:504:flags=neighbor,fps=8" \
   out/frame_%03d.png
 
 You can set fps here to your extraction FPS (e.g., 6–12). This is separate from the source video FPS.
@@ -443,7 +451,7 @@ UI-wise, that becomes an “Enhance” tab:
 For a first version, I’d ship these defaults:
 
 Generation
-	•	size = 1024x1792  ￼
+	•	size = 720x1280 (sora-2 default)  ￼
 	•	seconds = 4  ￼
 	•	model = sora-2 for drafts, sora-2-pro for “final”  ￼
 	•	prompt includes pixel + loop + magenta background constraints

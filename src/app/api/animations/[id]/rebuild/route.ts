@@ -94,8 +94,8 @@ export async function POST(
   const payload = await request.json().catch(() => ({}));
   const animation = await readJson<Record<string, unknown>>(animationPath);
 
-  const loopModeInput = String(payload?.loopMode ?? animation.loopMode ?? "pingpong");
-  const loopMode = loopModeInput === "loop" ? "loop" : "pingpong";
+  const loopModeInput = String(payload?.loopMode ?? animation.loopMode ?? "loop");
+  const loopMode = loopModeInput === "pingpong" ? "pingpong" : "loop";
   const sheetColumns = Math.max(1, Number(payload?.sheetColumns ?? animation.sheetColumns ?? 6));
 
   const rawFramesDir = storagePath("animations", id, "generated", "frames_raw");

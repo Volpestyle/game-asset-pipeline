@@ -51,7 +51,7 @@ const NewAnimationForm = () => {
     getDefaultVideoSize(defaultModel)
   );
   const [extractFps, setExtractFps] = useState(6);
-  const [loopMode, setLoopMode] = useState<"pingpong" | "loop">("pingpong");
+  const [loopMode, setLoopMode] = useState<"pingpong" | "loop">("loop");
   const [sheetColumns, setSheetColumns] = useState(6);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);

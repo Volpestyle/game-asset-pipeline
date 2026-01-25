@@ -346,7 +346,7 @@ async function runGeneration(animationId: string) {
       const requestedFps = Number(animation.extractFps ?? animation.fps ?? 6);
       const extractFps = [6, 8, 12].includes(requestedFps) ? requestedFps : 6;
       const loopMode =
-        String(animation.loopMode ?? "pingpong") === "loop" ? "loop" : "pingpong";
+        String(animation.loopMode ?? "loop") === "pingpong" ? "pingpong" : "loop";
       const sheetColumns = Math.max(1, Number(animation.sheetColumns ?? 6));
       const frameWidth = Number(animation.frameWidth ?? character.baseWidth ?? 253);
       const frameHeight = Number(animation.frameHeight ?? character.baseHeight ?? 504);

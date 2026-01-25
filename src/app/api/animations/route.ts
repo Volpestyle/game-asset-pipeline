@@ -120,7 +120,7 @@ export async function POST(request: Request) {
     generationSeconds: resolvedSeconds,
     generationSize: resolvedSize,
     extractFps: resolvedExtractFps,
-    loopMode: (loopMode ?? "pingpong") === "loop" ? "loop" : "pingpong",
+    loopMode: (loopMode ?? "loop") === "pingpong" ? "pingpong" : "loop",
     sheetColumns: resolvedColumns,
     keyframes,
     generatedFrames: [],
