@@ -18,6 +18,7 @@ import {
   storagePath,
   writeJson,
 } from "@/lib/storage";
+import { createAnimationVersion } from "@/lib/animationVersions";
 import {
   coerceVideoSizeForModel,
   getDefaultVideoSize,
@@ -523,7 +524,10 @@ async function runGeneration(animationId: string) {
       };
 
       await writeJson(filePath, { ...updated, updatedAt: new Date().toISOString() });
-      return updated;
+      const { animation: versioned } = await createAnimationVersion(animationId, {
+        source: "generation",
+      });
+      return versioned;
     }
 
     // Fallback: Replicate spritesheet generation (legacy)
@@ -631,7 +635,10 @@ async function runGeneration(animationId: string) {
     };
 
     await writeJson(filePath, { ...updated, updatedAt: new Date().toISOString() });
-    return updated;
+    const { animation: versioned } = await createAnimationVersion(animationId, {
+      source: "generation",
+    });
+    return versioned;
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Generation failed.";

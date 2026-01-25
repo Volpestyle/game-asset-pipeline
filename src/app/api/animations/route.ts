@@ -125,6 +125,9 @@ export async function POST(request: Request) {
     keyframes,
     generatedFrames: [],
     status: "draft",
+    versions: [],
+    activeVersionId: null,
+    versionCounter: 0,
     createdAt: now,
     updatedAt: now,
   };

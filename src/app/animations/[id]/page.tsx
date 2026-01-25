@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout";
@@ -35,6 +35,7 @@ export default function AnimationDetailPage() {
   const animationId = String(params.id ?? "");
 
   const [animation, setAnimation] = useState<Animation | null>(null);
+  const [savedAnimation, setSavedAnimation] = useState<Animation | null>(null);
   const [character, setCharacter] = useState<Character | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -49,6 +50,13 @@ export default function AnimationDetailPage() {
   const [isInterpolating, setIsInterpolating] = useState(false);
   const [interpolationModel, setInterpolationModel] = useState<"rd-fast" | "rd-plus">("rd-plus");
   const [isRefSaving, setIsRefSaving] = useState(false);
+  const [isVersionWorking, setIsVersionWorking] = useState(false);
+  const [versionName, setVersionName] = useState("");
+
+  const updateAnimationState = useCallback((newAnim: Animation | null) => {
+    setAnimation(newAnim);
+    setSavedAnimation(newAnim);
+  }, []);
 
   const loadAnimation = useCallback(async (options?: { silent?: boolean }) => {
     if (!animationId) return;
@@ -79,6 +87,10 @@ export default function AnimationDetailPage() {
         }
       }
       setAnimation(nextAnimation);
+      // setSavedAnimation should only be called if we trust the server state as "clean"
+      // If we are polling, we might overwrite local changes.
+      // But standard behavior for this app seems to be "server wins" on poll.
+      updateAnimationState(nextAnimation);
 
       const characterResponse = await fetch(`/api/characters/${data.animation.characterId}`, { cache: "no-store" });
       if (characterResponse.ok) {
@@ -94,7 +106,7 @@ export default function AnimationDetailPage() {
         setIsLoading(false);
       }
     }
-  }, [animationId]);
+  }, [animationId, updateAnimationState]);
 
   useEffect(() => {
     void loadAnimation();
@@ -143,7 +155,7 @@ export default function AnimationDetailPage() {
         throw new Error(data?.error || "Failed to save.");
       }
       const data = await response.json();
-      setAnimation(data.animation);
+      updateAnimationState(data.animation);
       setMessage("Saved.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save.");
@@ -160,15 +172,32 @@ export default function AnimationDetailPage() {
     const currentModel = String(animation.generationModel ?? "sora-2");
     const sizeValid = isSizeValidForModel(currentSize, currentModel);
     let adjustedSize: string | null = null;
+    let nextAnimation = { ...animation };
+
     if (!sizeValid) {
       adjustedSize = coerceVideoSizeForModel(currentSize, currentModel);
-      setAnimation({ ...animation, generationSize: adjustedSize });
+      nextAnimation = { ...nextAnimation, generationSize: adjustedSize };
+      setAnimation(nextAnimation);
     }
 
     setIsGenerating(true);
     setMessage(null);
     setError(null);
     try {
+      // Auto-save before generating to ensure latest settings (like description) are used
+      const saveResponse = await fetch(`/api/animations/${animationId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextAnimation),
+      });
+      if (!saveResponse.ok) {
+        throw new Error("Failed to auto-save settings before generation.");
+      }
+      // Update local state with saved version
+      const savedData = await saveResponse.json();
+      // Since we just auto-saved, the returned animation is the clean state
+      updateAnimationState(savedData.animation);
+
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -179,7 +208,7 @@ export default function AnimationDetailPage() {
         throw new Error(data?.error || "Generation failed.");
       }
       const data = await response.json();
-      setAnimation(data.animation ?? animation);
+      updateAnimationState(data.animation ?? savedData.animation);
       if (adjustedSize) {
         setMessage(
           `Generation started. Adjusted video size to ${adjustedSize} for ${currentModel}.`
@@ -213,7 +242,7 @@ export default function AnimationDetailPage() {
         throw new Error(data?.error || "Rebuild failed.");
       }
       const data = await response.json();
-      setAnimation(data.animation);
+      updateAnimationState(data.animation);
       setMessage("Spritesheet rebuilt.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Rebuild failed.");
@@ -263,7 +292,7 @@ export default function AnimationDetailPage() {
           throw new Error(respData?.error || "Keyframe update failed.");
         }
         const respData = await response.json();
-        setAnimation(respData.animation);
+        updateAnimationState(respData.animation);
         setMessage(`Keyframe updated at frame ${data.frameIndex}.`);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Keyframe update failed.");
@@ -271,7 +300,7 @@ export default function AnimationDetailPage() {
         setIsKeyframeWorking(false);
       }
     },
-    [animationId]
+    [animationId, updateAnimationState]
   );
 
   const clearKeyframe = useCallback(
@@ -288,13 +317,13 @@ export default function AnimationDetailPage() {
           throw new Error(data?.error || "Failed to clear keyframe.");
         }
         const data = await response.json();
-        setAnimation(data.animation);
+        updateAnimationState(data.animation);
         setMessage(`Keyframe cleared at frame ${frameIndex}.`);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to clear keyframe.");
       }
     },
-    [animationId]
+    [animationId, updateAnimationState]
   );
 
   const handleTimelineKeyframeAction = useCallback(
@@ -350,7 +379,8 @@ export default function AnimationDetailPage() {
           const data = await response.json();
           throw new Error(data?.error || "Failed to save reference selection.");
         }
-        await response.json().catch(() => null);
+        const data = await response.json();
+        updateAnimationState(data.animation);
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to save reference selection."
@@ -359,7 +389,7 @@ export default function AnimationDetailPage() {
         setIsRefSaving(false);
       }
     },
-    [animationId]
+    [animationId, updateAnimationState]
   );
 
   const handleClearKeyframes = async () => {
@@ -378,7 +408,7 @@ export default function AnimationDetailPage() {
         throw new Error(data?.error || "Failed to clear keyframes.");
       }
       const data = await response.json();
-      setAnimation(data.animation);
+      updateAnimationState(data.animation);
       setMessage("Cleared keyframes.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to clear keyframes.");
@@ -403,7 +433,7 @@ export default function AnimationDetailPage() {
         throw new Error(data?.error || "Failed to clear generation.");
       }
       const data = await response.json();
-      setAnimation(data.animation);
+      updateAnimationState(data.animation);
       setMessage("Cleared generated output.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to clear generation.");
@@ -440,6 +470,126 @@ export default function AnimationDetailPage() {
       setIsInterpolating(false);
     }
   };
+
+  const formatVersionTimestamp = (value?: string) => {
+    if (!value) return "";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString();
+  };
+
+  const handleCreateVersion = async () => {
+    if (!animationId) return;
+    setIsVersionWorking(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(`/api/animations/${animationId}/versions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: versionName.trim() || undefined,
+        }),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data?.error || "Failed to create version.");
+      }
+      const data = await response.json();
+      updateAnimationState(data.animation);
+      setVersionName("");
+      setMessage(`Version saved (${data.version?.name ?? "new version"}).`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create version.");
+    } finally {
+      setIsVersionWorking(false);
+    }
+  };
+
+  const handleSaveVersion = async (versionId: string) => {
+    if (!animationId) return;
+    const ok = window.confirm("Overwrite this version with the current state?");
+    if (!ok) return;
+    setIsVersionWorking(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(`/api/animations/${animationId}/versions/${versionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data?.error || "Failed to save version.");
+      }
+      const data = await response.json();
+      updateAnimationState(data.animation);
+      setMessage(`Version updated (${data.version?.name ?? "version"}).`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save version.");
+    } finally {
+      setIsVersionWorking(false);
+    }
+  };
+
+  const handleLoadVersion = async (versionId: string) => {
+    if (!animationId) return;
+    const ok = window.confirm(
+      "Load this version? Current keyframes and generated output will be replaced."
+    );
+    if (!ok) return;
+    setIsVersionWorking(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/animations/${animationId}/versions/${versionId}/load`,
+        { method: "POST" }
+      );
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data?.error || "Failed to load version.");
+      }
+      const data = await response.json();
+      updateAnimationState(data.animation);
+      setMessage("Version loaded.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load version.");
+    } finally {
+      setIsVersionWorking(false);
+    }
+  };
+
+  const handleDeleteVersion = async (versionId: string) => {
+    if (!animationId) return;
+    const ok = window.confirm("Delete this version? This cannot be undone.");
+    if (!ok) return;
+    setIsVersionWorking(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(`/api/animations/${animationId}/versions/${versionId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data?.error || "Failed to delete version.");
+      }
+      const data = await response.json();
+      updateAnimationState(data.animation);
+      setMessage("Version deleted.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete version.");
+    } finally {
+      setIsVersionWorking(false);
+    }
+  };
+
+  const hasChanges = useMemo(() => {
+    if (!animation || !savedAnimation) return false;
+    return JSON.stringify(animation) !== JSON.stringify(savedAnimation);
+  }, [animation, savedAnimation]);
 
   if (isLoading) {
     return (
@@ -487,13 +637,17 @@ export default function AnimationDetailPage() {
   const canRebuild =
     (animation.generatedFrames?.length ?? 0) > 0 &&
     animation.status === "complete";
+  const versions = animation.versions ?? [];
+  const activeVersionId = animation.activeVersionId ?? null;
+  
+
 
   return (
     <div className="min-h-screen grid-bg">
       <Header backHref="/animations" breadcrumb={`animations : ${animation.name}`}>
         <Button
           onClick={handleSave}
-          disabled={isSaving}
+          disabled={isSaving || !hasChanges}
           variant="outline"
           className="h-7 px-3 text-[10px] tracking-wider border-border hover:border-primary hover:text-primary"
         >
@@ -543,7 +697,7 @@ export default function AnimationDetailPage() {
                   Animation Editor
                 </p>
                 <h1 className="text-2xl font-bold tracking-tight">
-                  {animation.name} <span className="text-primary">Control</span>
+                  {animation.name}
                 </h1>
                 <p className="text-sm text-muted-foreground max-w-lg">
                   {character ? `Target: ${character.name}` : "No character loaded."}
@@ -696,6 +850,99 @@ export default function AnimationDetailPage() {
                     }}
                     isWorking={isKeyframeWorking}
                   />
+
+                  {/* Version Manager */}
+                  <div className="tech-border bg-card">
+                    <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground tracking-wider">VERSIONS</span>
+                      <span className="text-[10px] text-muted-foreground">{versions.length} SAVES</span>
+                    </div>
+                    <div className="p-4 space-y-3">
+                      <div className="flex gap-2">
+                        <input
+                          value={versionName}
+                          onChange={(event) => setVersionName(event.target.value)}
+                          placeholder="Version name (optional)"
+                          className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                        />
+                        <Button
+                          onClick={handleCreateVersion}
+                          disabled={isVersionWorking}
+                          className="h-9 px-3 bg-primary hover:bg-primary/80 text-primary-foreground text-[10px] tracking-wider"
+                        >
+                          {isVersionWorking ? "SAVING" : "ADD"}
+                        </Button>
+                      </div>
+                      {versions.length === 0 ? (
+                        <p className="text-[10px] text-muted-foreground">
+                          No versions saved yet. Creating a version snapshots keyframes and generated output.
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          {[...versions]
+                            .sort((a, b) => {
+                              const aTime = new Date(a.updatedAt ?? a.createdAt).getTime();
+                              const bTime = new Date(b.updatedAt ?? b.createdAt).getTime();
+                              return bTime - aTime;
+                            })
+                            .map((version) => {
+                              const isActive = activeVersionId === version.id;
+                              const label = version.updatedAt
+                                ? `Updated ${formatVersionTimestamp(version.updatedAt)}`
+                                : `Created ${formatVersionTimestamp(version.createdAt)}`;
+                              return (
+                                <div
+                                  key={version.id}
+                                  className={`border p-3 flex items-center justify-between gap-3 ${
+                                    isActive ? "border-primary/70 bg-primary/5" : "border-border"
+                                  }`}
+                                >
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs font-medium">{version.name}</span>
+                                      {isActive && (
+                                        <span className="text-[9px] px-1.5 py-0.5 border border-primary text-primary">
+                                          ACTIVE
+                                        </span>
+                                      )}
+                                      {version.source === "generation" && (
+                                        <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted-foreground">
+                                          AUTO
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground">{label}</p>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      onClick={() => handleLoadVersion(version.id)}
+                                      className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary"
+                                      disabled={isVersionWorking}
+                                    >
+                                      LOAD
+                                    </button>
+                                    <button
+                                      onClick={() => handleSaveVersion(version.id)}
+                                      className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary"
+                                      disabled={isVersionWorking}
+                                    >
+                                      SAVE
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteVersion(version.id)}
+                                      className="px-2 py-1 text-[10px] border border-destructive/60 text-destructive hover:border-destructive"
+                                      disabled={isVersionWorking}
+                                    >
+                                      DEL
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
                   {/* Interpolation Panel */}
                   <div className="tech-border bg-card">

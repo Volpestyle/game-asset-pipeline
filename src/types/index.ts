@@ -83,6 +83,9 @@ export interface Animation {
   keyframes: Keyframe[];
   generatedFrames: GeneratedFrame[];
   status: AnimationStatus;
+  versions?: AnimationVersion[];
+  activeVersionId?: string | null;
+  versionCounter?: number;
   generatedSpritesheet?: string;
   generationNote?: string;
   spritesheetLayout?: SpritesheetLayout;
@@ -101,6 +104,16 @@ export interface Animation {
 }
 
 export type AnimationStatus = 'draft' | 'generating' | 'complete' | 'failed';
+
+export type AnimationVersionSource = "manual" | "generation";
+
+export interface AnimationVersion {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt?: string;
+  source?: AnimationVersionSource;
+}
 
 export interface Keyframe {
   frameIndex: number;
