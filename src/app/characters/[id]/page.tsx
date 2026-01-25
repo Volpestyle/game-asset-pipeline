@@ -228,7 +228,7 @@ export default function CharacterDetailPage() {
                   <img
                     src={image.url}
                     alt={image.type}
-                    className="w-full aspect-square object-cover border border-border"
+                    className="w-full aspect-square object-contain border border-border"
                   />
                   <div className="flex items-center justify-between">
                     <select
