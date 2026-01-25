@@ -49,8 +49,9 @@ Upload character reference images → Define animation parameters → Generate c
 - **Framework**: Next.js 15 (App Router)
 - **Styling**: Tailwind CSS + shadcn/ui
 - **AI Backend**:
-  - Primary: Replicate (AnimateDiff, IP-Adapter, img2img models)
-  - Secondary: Fal.ai
+  - Primary: OpenAI Sora Video API (image → video → frames)
+  - Secondary: Replicate (rd-animation, rd-fast/rd-plus for keyframes)
+  - Optional: Fal.ai
   - Analysis: Gemini API (image understanding, style detection)
 - **Storage**: Local filesystem (MVP), S3-compatible (future)
 
@@ -85,6 +86,11 @@ src/
 # Install dependencies
 npm install
 
+# Ensure ffmpeg is installed (required for video frame extraction)
+# macOS: brew install ffmpeg
+# Ubuntu: sudo apt-get install ffmpeg
+# Windows: choco install ffmpeg
+
 # Set up environment variables
 cp .env.example .env.local
 # Add your API keys (REPLICATE_API_TOKEN, etc.)
@@ -96,10 +102,69 @@ npm run dev
 ## Environment Variables
 
 ```
+OPENAI_API_KEY=            # OpenAI API key (Sora video generation)
 REPLICATE_API_TOKEN=       # Replicate API token
 FAL_KEY=                   # Fal.ai API key (optional)
 GOOGLE_AI_API_KEY=         # Gemini API key (optional, for image analysis)
+RD_ANIMATION_VERSION=      # Replicate rd-animation model version (optional)
+RD_ANIMATION_MODEL=        # Replicate rd-animation model (optional, defaults to retro-diffusion/rd-animation)
+RD_FAST_MODEL=             # Replicate rd-fast model (optional, defaults to retro-diffusion/rd-fast)
+RD_FAST_VERSION=           # Replicate rd-fast version (optional)
+RD_PLUS_MODEL=             # Replicate rd-plus model (optional, defaults to retro-diffusion/rd-plus)
+RD_PLUS_VERSION=           # Replicate rd-plus version (optional)
 ```
+
+## Local Storage (MVP)
+
+Assets and metadata are stored locally under:
+
+```
+storage/
+├── characters/{id}/references
+└── animations/{id}/{generated,exports,keyframes}
+```
+
+Generated files are served via `/api/storage/...` for local preview.
+
+## Generation Defaults
+
+### Video-to-Frames (default)
+- Default model: `sora-2`
+- Video size: `1024x1792`
+- Duration: 4 seconds
+- Extract FPS: 6
+- Loop mode: ping-pong
+- Frame size derived from character reference (default 253×504)
+- If `OPENAI_API_KEY` is missing, generation will fail (fallback still available via Replicate)
+
+### Replicate fallback (legacy)
+- `retro-diffusion/rd-animation` generates a spritesheet directly
+- Uses the primary reference image
+- If `REPLICATE_API_TOKEN` is missing, a local fallback copies the primary reference image
+
+### Keyframe Refinement
+
+Single-frame and keyframe refinement use:
+
+- `retro-diffusion/rd-fast` for fast iterations
+- `retro-diffusion/rd-plus` for higher fidelity results
+
+Supported advanced inputs (rd-fast/rd-plus):
+
+- `input_palette` (palette reference image)
+- `tile_x`, `tile_y`
+- `seed`
+- `bypass_prompt_expansion`
+
+## Export Formats
+
+The export endpoint produces:
+
+- `spritesheet.png`
+- `spritesheet-array.json` (Aseprite JSON Array)
+- `spritesheet-hash.json` (Aseprite JSON Hash)
+- `frames/` PNG sequence + `frames/index.json` (if spritesheet frames are available)
+- `export_{animationId}.zip` bundle with all export assets
 
 ## Roadmap
 
