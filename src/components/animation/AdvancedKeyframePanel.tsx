@@ -90,13 +90,15 @@ export function AdvancedKeyframePanel({
 
   // Get existing keyframe data if present
   const existingKeyframe = animation.keyframes?.find((kf) => kf.frameIndex === currentFrame);
+  // Get generated frame at current index (from video or interpolation)
+  const currentGeneratedFrame = animation.generatedFrames?.find((f) => f.frameIndex === currentFrame);
 
   const [formData, setFormData] = useState<KeyframeFormData>({
     frameIndex: currentFrame,
     model: existingKeyframe?.model ?? "rd-fast",
     prompt: existingKeyframe?.prompt ?? "",
     style: "game_asset",
-    strength: existingKeyframe?.strength ?? 0.7,
+    strength: existingKeyframe?.strength ?? 0.4,
     removeBg: existingKeyframe?.removeBg ?? false,
     file: null,
     // Advanced
@@ -557,7 +559,7 @@ export function AdvancedKeyframePanel({
           <Button
             variant="outline"
             onClick={() => handleAction("refine")}
-            disabled={isWorking || (!formData.file && !existingKeyframe?.image)}
+            disabled={isWorking || (!formData.file && !existingKeyframe?.image && !currentGeneratedFrame?.url)}
             className="h-8 px-3 text-[10px] tracking-wider border-border hover:border-primary hover:text-primary"
           >
             REFINE

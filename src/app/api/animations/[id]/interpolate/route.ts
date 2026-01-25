@@ -43,9 +43,9 @@ async function loadImageBuffer(imageUrl: string) {
   return fs.readFile(localPath);
 }
 
-async function toRawImage(buffer: Buffer, size: number) {
+async function toRawImage(buffer: Buffer, width: number, height: number) {
   return sharp(buffer)
-    .resize(size, size, {
+    .resize(width, height, {
       fit: "contain",
       kernel: "nearest",
       background: { r: 0, g: 0, b: 0, alpha: 0 },
@@ -59,10 +59,11 @@ async function blendKeyframes(
   prevBuffer: Buffer,
   nextBuffer: Buffer,
   t: number,
-  frameSize: number
+  frameWidth: number,
+  frameHeight: number
 ) {
-  const prev = await toRawImage(prevBuffer, frameSize);
-  const next = await toRawImage(nextBuffer, frameSize);
+  const prev = await toRawImage(prevBuffer, frameWidth, frameHeight);
+  const next = await toRawImage(nextBuffer, frameWidth, frameHeight);
 
   if (prev.info.width !== next.info.width || prev.info.height !== next.info.height) {
     throw new Error("Mismatched keyframe sizes.");
@@ -86,19 +87,54 @@ async function blendKeyframes(
     .toBuffer();
 }
 
-function buildLayout(frameSize: number, frameCount: number) {
+function buildLayout(
+  frameWidth: number,
+  frameHeight: number,
+  frameCount: number
+) {
   const safeCount = Math.max(1, frameCount);
   const columns = Math.max(1, Math.ceil(Math.sqrt(safeCount)));
   const rows = Math.max(1, Math.ceil(safeCount / columns));
   return {
-    frameSize,
-    frameWidth: frameSize,
-    frameHeight: frameSize,
+    frameSize: frameWidth === frameHeight ? frameWidth : undefined,
+    frameWidth,
+    frameHeight,
     columns,
     rows,
-    width: columns * frameSize,
-    height: rows * frameSize,
+    width: columns * frameWidth,
+    height: rows * frameHeight,
   };
+}
+
+async function resolveFrameDimensions(
+  animation: AnimationModel,
+  keyframes: Keyframe[]
+) {
+  const firstWithImage = keyframes.find((kf) => kf.image);
+  if (firstWithImage?.image) {
+    try {
+      const buffer = await loadImageBuffer(String(firstWithImage.image));
+      const metadata = await sharp(buffer).metadata();
+      if (metadata.width && metadata.height) {
+        return { frameWidth: metadata.width, frameHeight: metadata.height };
+      }
+    } catch {
+      // Fall through to animation defaults.
+    }
+  }
+
+  const frameWidth = Number(
+    animation.spritesheetLayout?.frameWidth ?? animation.frameWidth ?? 0
+  );
+  const frameHeight = Number(
+    animation.spritesheetLayout?.frameHeight ?? animation.frameHeight ?? 0
+  );
+  if (frameWidth && frameHeight) {
+    return { frameWidth, frameHeight };
+  }
+
+  const fallback = Number(animation.spriteSize ?? 48);
+  return { frameWidth: fallback, frameHeight: fallback };
 }
 
 export async function POST(
@@ -138,8 +174,9 @@ export async function POST(
     const totalFrames = Number(
       animation.actualFrameCount ?? animation.frameCount ?? 0
     );
-    const frameSize = Number(
-      animation.spritesheetLayout?.frameSize ?? animation.spriteSize ?? 48
+    const { frameWidth, frameHeight } = await resolveFrameDimensions(
+      animation,
+      usableKeyframes
     );
 
     const modelId = model === "rd-fast" ? RD_FAST_MODEL : RD_PLUS_MODEL;
@@ -174,7 +211,13 @@ export async function POST(
         }
 
         const t = (frameIndex - prev.frameIndex) / gap;
-        const blended = await blendKeyframes(prevBuffer, nextBuffer, t, frameSize);
+        const blended = await blendKeyframes(
+          prevBuffer,
+          nextBuffer,
+          t,
+          frameWidth,
+          frameHeight
+        );
         const inputImage = toDataUrl(blended, "image/png");
         const strength = clampStrength(computeStrength(t));
         const promptBase = String(animation.description ?? "").trim();
@@ -185,12 +228,13 @@ export async function POST(
         const input: Record<string, unknown> = {
           prompt,
           style,
-          width: frameSize,
-          height: frameSize,
+          width: frameWidth,
+          height: frameHeight,
           num_images: 1,
           input_image: inputImage,
           strength,
           remove_bg: removeBg,
+          bypass_prompt_expansion: true,
         };
 
         const prediction = await runReplicateModel({
@@ -224,7 +268,8 @@ export async function POST(
         await writeFrameImage({
           buffer: outputBuffer,
           outputPath: framePath,
-          frameSize,
+          frameWidth,
+          frameHeight,
         });
 
         framesMap.set(frameIndex, {
@@ -237,7 +282,13 @@ export async function POST(
       }
     }
 
-    const spritesheetLayout = animation.spritesheetLayout ?? buildLayout(frameSize, totalFrames);
+    const existingLayout = animation.spritesheetLayout;
+    const spritesheetLayout =
+      existingLayout &&
+      existingLayout.frameWidth === frameWidth &&
+      existingLayout.frameHeight === frameHeight
+        ? existingLayout
+        : buildLayout(frameWidth, frameHeight, totalFrames);
     let generatedSpritesheet = animation.generatedSpritesheet;
     const recomposedName = `spritesheet_${Date.now()}_interpolated.png`;
     const recomposedPath = storagePath("animations", id, "generated", recomposedName);

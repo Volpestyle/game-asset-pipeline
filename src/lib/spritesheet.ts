@@ -135,11 +135,20 @@ export async function composeSpritesheet(options: {
 export async function writeFrameImage(options: {
   buffer: Buffer;
   outputPath: string;
-  frameSize: number;
+  frameSize?: number;
+  frameWidth?: number;
+  frameHeight?: number;
 }) {
+  const fallbackSize =
+    options.frameSize ??
+    (options.frameWidth && options.frameHeight
+      ? Math.max(options.frameWidth, options.frameHeight)
+      : 0);
+  const frameWidth = options.frameWidth ?? options.frameSize ?? fallbackSize;
+  const frameHeight = options.frameHeight ?? options.frameSize ?? fallbackSize;
   await fs.mkdir(path.dirname(options.outputPath), { recursive: true });
   await sharp(options.buffer)
-    .resize(options.frameSize, options.frameSize, {
+    .resize(frameWidth, frameHeight, {
       fit: "contain",
       kernel: "nearest",
       background: { r: 0, g: 0, b: 0, alpha: 0 },

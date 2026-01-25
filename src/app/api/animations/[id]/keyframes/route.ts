@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import crypto from "crypto";
+import sharp from "sharp";
 import { runReplicateModel } from "@/lib/ai/replicate";
 import { getShutdownSignal } from "@/lib/shutdown";
 import { composeSpritesheet, writeFrameImage } from "@/lib/spritesheet";
@@ -71,6 +72,35 @@ function updateKeyframes(list: Keyframe[], entry: Keyframe) {
   return updated;
 }
 
+async function resolveFrameDimensions(
+  animation: AnimationModel,
+  inputImagePath?: string | null
+) {
+  if (inputImagePath) {
+    try {
+      const metadata = await sharp(inputImagePath).metadata();
+      if (metadata.width && metadata.height) {
+        return { frameWidth: metadata.width, frameHeight: metadata.height };
+      }
+    } catch {
+      // Fall through to animation defaults.
+    }
+  }
+
+  const frameWidth = Number(
+    animation.spritesheetLayout?.frameWidth ?? animation.frameWidth ?? 0
+  );
+  const frameHeight = Number(
+    animation.spritesheetLayout?.frameHeight ?? animation.frameHeight ?? 0
+  );
+  if (frameWidth && frameHeight) {
+    return { frameWidth, frameHeight };
+  }
+
+  const fallback = Number(animation.spriteSize ?? 48);
+  return { frameWidth: fallback, frameHeight: fallback };
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -88,7 +118,7 @@ export async function POST(
   const promptInput = String(formData.get("prompt") ?? "").trim();
   const model = String(formData.get("model") ?? "rd-fast");
   const styleInput = String(formData.get("style") ?? "").trim();
-  const strength = parseNumber(formData.get("strength"), 0.7);
+  const strength = parseNumber(formData.get("strength"), 0.4);
   const removeBg = parseBoolean(formData.get("removeBg"));
   const bypassPromptExpansion = parseBoolean(formData.get("bypassPromptExpansion"));
   const tileX = parseBoolean(formData.get("tileX"));
@@ -131,23 +161,51 @@ export async function POST(
       await fs.writeFile(tempPath, buffer);
       inputImagePath = tempPath;
       outputExt = ext;
-    } else if (mode === "refine" && existingKeyframe?.image) {
-      const existingPath = storagePathFromUrl(existingKeyframe.image);
-      if (existingPath && (await fileExists(existingPath))) {
-        inputImagePath = existingPath;
-        outputExt = path.extname(existingPath) || ".png";
+    } else if (mode === "refine") {
+      // Try keyframe image first, then fall back to generated frame
+      const imageUrl = existingKeyframe?.image ??
+        (animation.generatedFrames as Array<{ frameIndex: number; url?: string }> | undefined)
+          ?.find((f) => f.frameIndex === frameIndex)?.url;
+      if (imageUrl) {
+        const existingPath = storagePathFromUrl(imageUrl);
+        if (existingPath && (await fileExists(existingPath))) {
+          inputImagePath = existingPath;
+          outputExt = path.extname(existingPath) || ".png";
+        }
       }
     }
 
     if (mode === "refine" && !inputImagePath) {
       return Response.json(
-        { error: "Refine requires an existing keyframe or upload." },
+        { error: "Refine requires an existing frame (keyframe, generated, or upload)." },
         { status: 400 }
       );
     }
 
-    const spriteSize = Number(
-      animation.spritesheetLayout?.frameSize ?? animation.spriteSize ?? 48
+    if (!inputImagePath && mode === "generate") {
+      const characterId = String(animation.characterId ?? "");
+      const characterPath = storagePath("characters", characterId, "character.json");
+      if (characterId && (await fileExists(characterPath))) {
+        const character = await readJson<Record<string, unknown>>(characterPath);
+        const references =
+          (character.referenceImages as Array<Record<string, unknown>> | undefined) ?? [];
+        const primary =
+          references.find((image) => image.isPrimary) ?? references[0];
+        const filename =
+          (primary?.filename as string | undefined) ??
+          String(primary?.url ?? "").split("/").pop();
+        if (filename) {
+          const refPath = storagePath("characters", characterId, "references", filename);
+          if (await fileExists(refPath)) {
+            inputImagePath = refPath;
+          }
+        }
+      }
+    }
+
+    const { frameWidth, frameHeight } = await resolveFrameDimensions(
+      animation,
+      inputImagePath
     );
     const prompt = promptInput || String(animation.description ?? "");
     const usePlus = model === "rd-plus";
@@ -201,8 +259,8 @@ export async function POST(
     const input: Record<string, unknown> = {
       prompt,
       style,
-      width: spriteSize,
-      height: spriteSize,
+      width: frameWidth,
+      height: frameHeight,
       num_images: 1,
       remove_bg: removeBg,
     };
@@ -291,14 +349,28 @@ export async function POST(
     "frames",
     `frame_${String(frameIndex).padStart(3, "0")}.png`
   );
-  const spriteSize = Number(
-    animation.spritesheetLayout?.frameSize ?? animation.spriteSize ?? 48
-  );
   try {
+    let outputWidth = 0;
+    let outputHeight = 0;
+    try {
+      const metadata = await sharp(outputBuffer).metadata();
+      outputWidth = metadata.width ?? 0;
+      outputHeight = metadata.height ?? 0;
+    } catch {
+      // Fall back to animation defaults.
+    }
+
+    const fallback = Number(animation.spriteSize ?? 48);
+    const frameWidth =
+      outputWidth || Number(animation.frameWidth ?? animation.spriteSize ?? fallback);
+    const frameHeight =
+      outputHeight || Number(animation.frameHeight ?? animation.spriteSize ?? fallback);
+
     await writeFrameImage({
       buffer: outputBuffer,
       outputPath: frameFile,
-      frameSize: spriteSize,
+      frameWidth,
+      frameHeight,
     });
   } catch {
     // Frame write is best-effort; continue.
