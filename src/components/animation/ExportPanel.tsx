@@ -1,15 +1,40 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import type { Animation } from "@/types";
+import type { Animation, ProjectSettings, AnchorPoint } from "@/types";
 
 interface ExportPanelProps {
   animation: Animation;
-  onExport: () => Promise<void>;
+  onExport: (options: {
+    normalize: boolean;
+    removeBackground: boolean;
+    alphaThreshold: number;
+  }) => Promise<void>;
   isExporting: boolean;
 }
 
+const ANCHOR_LABELS: Record<AnchorPoint, string> = {
+  "bottom-center": "Bottom Center",
+  "center": "Center",
+  "bottom-left": "Bottom Left",
+  "bottom-right": "Bottom Right",
+  "top-center": "Top Center",
+};
+
 export function ExportPanel({ animation, onExport, isExporting }: ExportPanelProps) {
+  const [normalize, setNormalize] = useState(false);
+  const [removeBackground, setRemoveBackground] = useState(false);
+  const [alphaThresholdEnabled, setAlphaThresholdEnabled] = useState(false);
+  const [alphaThreshold, setAlphaThreshold] = useState(16);
+  const [projectSettings, setProjectSettings] = useState<ProjectSettings | null>(null);
+
+  useEffect(() => {
+    fetch("/api/project")
+      .then((res) => res.json())
+      .then((data) => setProjectSettings(data.settings))
+      .catch(() => {});
+  }, []);
   const hasExports = animation.exports && Object.keys(animation.exports).length > 0;
   const hasSpritesheet = !!animation.generatedSpritesheet;
   const frameWidth =
@@ -124,9 +149,85 @@ export function ExportPanel({ animation, onExport, isExporting }: ExportPanelPro
           </div>
         </div>
 
+        {/* Normalize option */}
+        {projectSettings && (
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={normalize}
+                onChange={(e) => setNormalize(e.target.checked)}
+                className="w-4 h-4 accent-primary"
+              />
+              <span className="text-xs text-foreground">Normalize to canvas</span>
+            </label>
+            {normalize && (
+              <div className="pl-6 text-[10px] text-muted-foreground space-y-0.5">
+                <div>Canvas: {projectSettings.canvasWidth}×{projectSettings.canvasHeight}</div>
+                <div>Anchor: {ANCHOR_LABELS[projectSettings.defaultAnchor]}</div>
+                <div>Scale: {Math.round(projectSettings.defaultScale * 100)}%</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Background cleanup */}
+        <div className="space-y-2">
+          <p className="text-[10px] text-muted-foreground tracking-wider">
+            Background Cleanup
+          </p>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={removeBackground}
+              onChange={(e) => setRemoveBackground(e.target.checked)}
+              className="w-4 h-4 accent-primary"
+            />
+            <span className="text-xs text-foreground">Re-key background color</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={alphaThresholdEnabled}
+              onChange={(e) => setAlphaThresholdEnabled(e.target.checked)}
+              className="w-4 h-4 accent-primary"
+            />
+            <span className="text-xs text-foreground">Clamp alpha (hard edges)</span>
+          </label>
+          {alphaThresholdEnabled && (
+            <div className="pl-6 flex items-center gap-2 text-[10px] text-muted-foreground">
+              <span>Threshold</span>
+              <input
+                type="number"
+                min={0}
+                max={255}
+                value={alphaThreshold}
+                onChange={(event) => {
+                  const next = Number(event.target.value);
+                  if (!Number.isFinite(next)) return;
+                  setAlphaThreshold(Math.min(255, Math.max(0, Math.round(next))));
+                }}
+                className="terminal-input w-20 h-7 px-2 text-[10px] bg-card"
+              />
+              <span>0-255</span>
+            </div>
+          )}
+          {(removeBackground || alphaThresholdEnabled) && (
+            <p className="text-[10px] text-muted-foreground/70">
+              Applied only to export output. Originals remain unchanged. Uses the working key color (default magenta).
+            </p>
+          )}
+        </div>
+
         {/* Export button */}
         <Button
-          onClick={onExport}
+          onClick={() =>
+            onExport({
+              normalize,
+              removeBackground,
+              alphaThreshold: alphaThresholdEnabled ? alphaThreshold : 0,
+            })
+          }
           disabled={isExporting || !hasSpritesheet}
           className="w-full h-9 bg-primary hover:bg-primary/80 text-primary-foreground text-[10px] tracking-wider"
         >
@@ -137,6 +238,10 @@ export function ExportPanel({ animation, onExport, isExporting }: ExportPanelPro
         {hasSpritesheet && !hasExports && (
           <p className="text-[10px] text-muted-foreground leading-relaxed">
             Export will generate spritesheet PNG, Aseprite JSON metadata in both array and hash formats.
+            {normalize && " Frames will be normalized to the project canvas size."}
+            {removeBackground && " Background will be re-keyed using the working key color."}
+            {alphaThresholdEnabled &&
+              ` Alpha will be clamped at ${alphaThreshold} for crisp edges.`}
           </p>
         )}
 
