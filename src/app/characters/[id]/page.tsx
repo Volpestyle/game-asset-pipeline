@@ -6,7 +6,15 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout";
-import type { ArtStyle, Character, ReferenceImageType } from "@/types";
+import type { AnchorPoint, ArtStyle, Character, ReferenceImageType } from "@/types";
+
+const ANCHOR_OPTIONS: { value: AnchorPoint; label: string }[] = [
+  { value: "bottom-center", label: "Bottom Center (feet)" },
+  { value: "center", label: "Center" },
+  { value: "bottom-left", label: "Bottom Left" },
+  { value: "bottom-right", label: "Bottom Right" },
+  { value: "top-center", label: "Top Center" },
+];
 
 const IMAGE_TYPES: { value: ReferenceImageType; label: string; code: string }[] = [
   { value: "front", label: "Front View", code: "FNT" },
@@ -96,6 +104,8 @@ export default function CharacterDetailPage() {
         body: JSON.stringify({
           ...character,
           referenceImages: sanitizedRefs,
+          anchor: character.anchor,
+          scale: character.scale,
         }),
       });
       if (!response.ok) {
@@ -212,6 +222,62 @@ export default function CharacterDetailPage() {
               <p className="text-[10px] text-muted-foreground leading-relaxed">
                 You can update types and primary reference below. Adding or removing files is not supported yet.
               </p>
+            </div>
+          </section>
+
+          {/* Canvas Normalization Settings */}
+          <section className="tech-border bg-card p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground tracking-wider">Canvas Normalization</p>
+              <span className="text-[10px] text-muted-foreground">Export settings</span>
+            </div>
+            <p className="text-[10px] text-muted-foreground leading-relaxed">
+              These settings control how this character is positioned and scaled when exporting with normalization enabled.
+              Leave blank to use project defaults.
+            </p>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-[10px] text-muted-foreground tracking-widest">Anchor Point</label>
+                <select
+                  value={character.anchor ?? ""}
+                  onChange={(e) => setCharacter({
+                    ...character,
+                    anchor: e.target.value ? e.target.value as AnchorPoint : undefined,
+                  })}
+                  className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                >
+                  <option value="">Use project default</option>
+                  {ANCHOR_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+                <p className="text-[9px] text-muted-foreground">
+                  Where to position the character within the canvas
+                </p>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] text-muted-foreground tracking-widest">Scale</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="1"
+                    step="0.05"
+                    value={character.scale ?? 0.8}
+                    onChange={(e) => setCharacter({
+                      ...character,
+                      scale: parseFloat(e.target.value),
+                    })}
+                    className="flex-1 accent-primary"
+                  />
+                  <span className="text-xs text-foreground w-12 text-right">
+                    {Math.round((character.scale ?? 0.8) * 100)}%
+                  </span>
+                </div>
+                <p className="text-[9px] text-muted-foreground">
+                  How much of the canvas height the character fills
+                </p>
+              </div>
             </div>
           </section>
 
