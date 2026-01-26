@@ -1,3 +1,20 @@
+// Canvas normalization anchor points
+export type AnchorPoint =
+  | "bottom-center"   // Feet at bottom-center (platformers)
+  | "center"          // Center of sprite (top-down games)
+  | "bottom-left"     // Feet at bottom-left
+  | "bottom-right"    // Feet at bottom-right
+  | "top-center";     // Head at top-center (hanging sprites)
+
+// Project-wide settings for canvas normalization
+export interface ProjectSettings {
+  canvasWidth: number;       // Standard output width (e.g., 256)
+  canvasHeight: number;      // Standard output height (e.g., 512)
+  defaultAnchor: AnchorPoint;
+  defaultScale: number;      // 0.0-1.0, default character scale
+  updatedAt?: string;
+}
+
 // Character identity extracted from reference images
 export interface Character {
   id: string;
@@ -8,6 +25,9 @@ export interface Character {
   baseHeight?: number;
   workingReference?: WorkingReference;
   workingSpec?: WorkingSpec;
+  // Canvas normalization settings (uses project defaults if not set)
+  anchor?: AnchorPoint;
+  scale?: number;            // 0.0-1.0, how much of canvas height to fill
   createdAt: string;
   updatedAt: string;
 }
@@ -96,6 +116,9 @@ export interface Animation {
     pngSequenceUrl?: string;
     pngSequenceIndexUrl?: string;
     zipBundleUrl?: string;
+    normalized?: boolean;
+    backgroundRemoved?: boolean;
+    alphaThreshold?: number;
   };
   // rd-animation model outputs fixed frame counts
   actualFrameCount?: number;
