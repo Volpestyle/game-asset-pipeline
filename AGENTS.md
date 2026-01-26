@@ -1,0 +1,5 @@
+- never use 'any' or 'unknown' types or type casting unless absolutely necessary
+- always delete legacy or deprecated code
+- always use proper logging methods to make any complexity easily debuggable via logs
+- always include proper and visible error handling
+- never use toast ui messages
