@@ -3,9 +3,9 @@
 import {
   getVideoSizeOptions,
   isSizeValidForModel,
+  getVideoModelLabel,
 } from "@/lib/ai/soraConstraints";
 
-export const VIDEO_SECONDS_OPTIONS = [4, 8, 12];
 export const EXTRACT_FPS_OPTIONS = [6, 8, 12];
 
 export type LoopMode = "loop" | "pingpong";
@@ -32,6 +32,7 @@ export function ModelConstraints({
 }: ModelConstraintsProps) {
   const sizeOptions = getVideoSizeOptions(generationModel);
   const isValidSize = isSizeValidForModel(generationSize, generationModel);
+  const modelLabel = getVideoModelLabel(generationModel);
 
   return (
     <div className="tech-border bg-card">
@@ -39,7 +40,7 @@ export function ModelConstraints({
         <span className="text-xs text-muted-foreground tracking-wider">
           Video Constraints
         </span>
-        <span className="text-[10px] text-primary">Sora</span>
+        <span className="text-[10px] text-primary">{modelLabel}</span>
       </div>
 
       <div className="p-4 space-y-4">
@@ -69,7 +70,7 @@ export function ModelConstraints({
           </div>
           {!isValidSize && (
             <p className="text-[10px] text-destructive">
-              Select a supported video resolution for Sora.
+              Select a supported video resolution for {modelLabel}.
             </p>
           )}
         </div>
