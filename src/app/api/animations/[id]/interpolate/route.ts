@@ -18,6 +18,9 @@ const RD_FAST_MODEL = process.env.RD_FAST_MODEL?.trim() || "retro-diffusion/rd-f
 const RD_PLUS_MODEL = process.env.RD_PLUS_MODEL?.trim() || "retro-diffusion/rd-plus";
 const RD_FAST_VERSION = process.env.RD_FAST_VERSION?.trim() || undefined;
 const RD_PLUS_VERSION = process.env.RD_PLUS_VERSION?.trim() || undefined;
+const NANO_BANANA_MODEL =
+  process.env.NANO_BANANA_MODEL?.trim() || "google/nano-banana-pro";
+const NANO_BANANA_VERSION = process.env.NANO_BANANA_VERSION?.trim() || undefined;
 
 const MIN_STRENGTH = 0.15;
 const MAX_STRENGTH = 0.35;
@@ -33,6 +36,36 @@ function computeStrength(t: number) {
 
 function toDataUrl(buffer: Buffer, mime = "image/png") {
   return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
+function inferAspectRatio(width: number, height: number) {
+  if (!width || !height) return undefined;
+  const ratio = width / height;
+  const presets = [
+    { value: "1:1", ratio: 1 },
+    { value: "4:3", ratio: 4 / 3 },
+    { value: "3:4", ratio: 3 / 4 },
+    { value: "16:9", ratio: 16 / 9 },
+    { value: "9:16", ratio: 9 / 16 },
+  ];
+  let best = presets[0];
+  let bestDelta = Math.abs(ratio - best.ratio);
+  for (const preset of presets.slice(1)) {
+    const delta = Math.abs(ratio - preset.ratio);
+    if (delta < bestDelta) {
+      best = preset;
+      bestDelta = delta;
+    }
+  }
+  return best.value;
+}
+
+function inferResolution(width: number, height: number) {
+  const maxDim = Math.max(width, height);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return undefined;
+  if (maxDim >= 3500) return "4K";
+  if (maxDim >= 1800) return "2K";
+  return "1K";
 }
 
 async function loadImageBuffer(imageUrl: string) {
@@ -150,7 +183,12 @@ export async function POST(
 
   const payload = await request.json().catch(() => ({}));
   const modelInput = String(payload?.model ?? "rd-plus");
-  const model = modelInput === "rd-fast" ? "rd-fast" : "rd-plus";
+  const model =
+    modelInput === "nano-banana-pro"
+      ? "nano-banana-pro"
+      : modelInput === "rd-fast"
+        ? "rd-fast"
+        : "rd-plus";
   const styleInput = String(payload?.style ?? "").trim();
   const removeBg = payload?.removeBg === true;
 
@@ -179,11 +217,21 @@ export async function POST(
       usableKeyframes
     );
 
-    const modelId = model === "rd-fast" ? RD_FAST_MODEL : RD_PLUS_MODEL;
-    const version = model === "rd-fast" ? RD_FAST_VERSION : RD_PLUS_VERSION;
+    const isNano = model === "nano-banana-pro";
+    const isRdFast = model === "rd-fast";
+    const modelId = isNano
+      ? NANO_BANANA_MODEL
+      : isRdFast
+        ? RD_FAST_MODEL
+        : RD_PLUS_MODEL;
+    const version = isNano
+      ? NANO_BANANA_VERSION
+      : isRdFast
+        ? RD_FAST_VERSION
+        : RD_PLUS_VERSION;
 
-    const defaultStyle = model === "rd-fast" ? "game_asset" : "default";
-    const style = styleInput || defaultStyle;
+    const defaultStyle = isRdFast ? "game_asset" : "default";
+    const style = isNano ? "" : styleInput || defaultStyle;
 
     const framesDir = storagePath("animations", id, "generated", "frames");
     const framesMap = new Map<number, GeneratedFrame>();
@@ -225,17 +273,35 @@ export async function POST(
           ? `${promptBase}, in-between frame ${frameIndex + 1} of ${totalFrames}`
           : `in-between frame ${frameIndex + 1} of ${totalFrames}`;
 
-        const input: Record<string, unknown> = {
-          prompt,
-          style,
-          width: frameWidth,
-          height: frameHeight,
-          num_images: 1,
-          input_image: inputImage,
-          strength,
-          remove_bg: removeBg,
-          bypass_prompt_expansion: true,
-        };
+        let input: Record<string, unknown>;
+        if (isNano) {
+          input = {
+            prompt,
+            output_format: "png",
+            safety_filter_level: "block_only_high",
+            image_input: [inputImage],
+          };
+          const aspectRatio = inferAspectRatio(frameWidth, frameHeight);
+          if (aspectRatio) {
+            input.aspect_ratio = aspectRatio;
+          }
+          const resolution = inferResolution(frameWidth, frameHeight);
+          if (resolution) {
+            input.resolution = resolution;
+          }
+        } else {
+          input = {
+            prompt,
+            style,
+            width: frameWidth,
+            height: frameHeight,
+            num_images: 1,
+            input_image: inputImage,
+            strength,
+            remove_bg: removeBg,
+            bypass_prompt_expansion: true,
+          };
+        }
 
         const prediction = await runReplicateModel({
           model: modelId,

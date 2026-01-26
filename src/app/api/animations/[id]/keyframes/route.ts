@@ -20,6 +20,9 @@ const RD_FAST_MODEL = process.env.RD_FAST_MODEL?.trim() || "retro-diffusion/rd-f
 const RD_PLUS_MODEL = process.env.RD_PLUS_MODEL?.trim() || "retro-diffusion/rd-plus";
 const RD_FAST_VERSION = process.env.RD_FAST_VERSION?.trim() || undefined;
 const RD_PLUS_VERSION = process.env.RD_PLUS_VERSION?.trim() || undefined;
+const NANO_BANANA_MODEL =
+  process.env.NANO_BANANA_MODEL?.trim() || "google/nano-banana-pro";
+const NANO_BANANA_VERSION = process.env.NANO_BANANA_VERSION?.trim() || undefined;
 
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -60,6 +63,36 @@ function parseBoolean(value: FormDataEntryValue | null) {
     return value === "true" || value === "1" || value === "yes";
   }
   return false;
+}
+
+function inferAspectRatio(width: number, height: number) {
+  if (!width || !height) return undefined;
+  const ratio = width / height;
+  const presets = [
+    { value: "1:1", ratio: 1 },
+    { value: "4:3", ratio: 4 / 3 },
+    { value: "3:4", ratio: 3 / 4 },
+    { value: "16:9", ratio: 16 / 9 },
+    { value: "9:16", ratio: 9 / 16 },
+  ];
+  let best = presets[0];
+  let bestDelta = Math.abs(ratio - best.ratio);
+  for (const preset of presets.slice(1)) {
+    const delta = Math.abs(ratio - preset.ratio);
+    if (delta < bestDelta) {
+      best = preset;
+      bestDelta = delta;
+    }
+  }
+  return best.value;
+}
+
+function inferResolution(width: number, height: number) {
+  const maxDim = Math.max(width, height);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return undefined;
+  if (maxDim >= 3500) return "4K";
+  if (maxDim >= 1800) return "2K";
+  return "1K";
 }
 
 function updateKeyframes(list: Keyframe[], entry: Keyframe) {
@@ -116,7 +149,13 @@ export async function POST(
   const mode = String(formData.get("mode") ?? "upload");
   const frameIndex = parseNumber(formData.get("frameIndex"), -1);
   const promptInput = String(formData.get("prompt") ?? "").trim();
-  const model = String(formData.get("model") ?? "rd-fast");
+  const modelInput = String(formData.get("model") ?? "rd-fast");
+  const model =
+    modelInput === "nano-banana-pro"
+      ? "nano-banana-pro"
+      : modelInput === "rd-plus"
+        ? "rd-plus"
+        : "rd-fast";
   const styleInput = String(formData.get("style") ?? "").trim();
   const strength = parseNumber(formData.get("strength"), 0.4);
   const removeBg = parseBoolean(formData.get("removeBg"));
@@ -207,125 +246,169 @@ export async function POST(
       animation,
       inputImagePath
     );
-    const prompt = promptInput || String(animation.description ?? "");
-    const usePlus = model === "rd-plus";
-    const version = usePlus ? RD_PLUS_VERSION : RD_FAST_VERSION;
-    const modelId = usePlus ? RD_PLUS_MODEL : RD_FAST_MODEL;
-    const allowedStyles = usePlus
-      ? [
-        "default",
-        "retro",
-        "watercolor",
-        "textured",
-        "cartoon",
-        "ui_element",
-        "item_sheet",
-        "character_turnaround",
-        "environment",
-        "isometric",
-        "isometric_asset",
-        "topdown_map",
-        "topdown_asset",
-        "classic",
-        "topdown_item",
-        "low_res",
-        "mc_item",
-        "mc_texture",
-        "skill_icon",
-      ]
-      : [
-        "default",
-        "simple",
-        "detailed",
-        "retro",
-        "game_asset",
-        "portrait",
-        "texture",
-        "ui",
-        "item_sheet",
-        "character_turnaround",
-        "1_bit",
-        "low_res",
-        "mc_item",
-        "mc_texture",
-        "no_style",
-      ];
-    const style = allowedStyles.includes(styleInput)
-      ? styleInput
-      : usePlus
-        ? "default"
-        : "game_asset";
+    const promptBase = promptInput || String(animation.description ?? "").trim();
+    const prompt =
+      model === "nano-banana-pro" ? promptBase || "pixel art sprite" : promptBase;
 
-    const input: Record<string, unknown> = {
-      prompt,
-      style,
-      width: frameWidth,
-      height: frameHeight,
-      num_images: 1,
-      remove_bg: removeBg,
-    };
+    if (model === "nano-banana-pro") {
+      const input: Record<string, unknown> = {
+        prompt,
+        output_format: "png",
+        safety_filter_level: "block_only_high",
+      };
 
-    if (inputImagePath) {
-      input.input_image = await fileToDataUrl(inputImagePath);
-      input.strength = Math.min(1, Math.max(0, strength));
-    }
-    if (tileX) {
-      input.tile_x = true;
-    }
-    if (tileY) {
-      input.tile_y = true;
-    }
-    if (bypassPromptExpansion) {
-      input.bypass_prompt_expansion = true;
-    }
-    if (Number.isFinite(seed)) {
-      input.seed = seed;
-    }
+      const aspectRatio = inferAspectRatio(frameWidth, frameHeight);
+      if (aspectRatio) {
+        input.aspect_ratio = aspectRatio;
+      }
+      const resolution = inferResolution(frameWidth, frameHeight);
+      if (resolution) {
+        input.resolution = resolution;
+      }
+      if (inputImagePath) {
+        input.image_input = [await fileToDataUrl(inputImagePath)];
+      }
 
-    const paletteInput = formData.get("inputPalette");
-    if (paletteInput && typeof paletteInput === "string") {
-      const parsed = parseDataUrl(paletteInput);
-      if (parsed) {
-        const ext = MIME_EXT[parsed.mime] ?? ".png";
-        const paletteFilename = `palette_${crypto.randomUUID()}${ext}`;
+      const prediction = await runReplicateModel({
+        version: NANO_BANANA_VERSION,
+        model: NANO_BANANA_MODEL,
+        input,
+      });
+
+      const output = prediction.output;
+      const outputUrl =
+        (Array.isArray(output) ? output[0] : output) as string | undefined;
+
+      if (!outputUrl) {
+        return Response.json({ error: "No output returned." }, { status: 500 });
+      }
+
+      const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
+      if (!outputResponse.ok) {
+        return Response.json({ error: "Failed to download output." }, { status: 500 });
+      }
+      outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
+      outputExt = ".png";
+    } else {
+      const usePlus = model === "rd-plus";
+      const version = usePlus ? RD_PLUS_VERSION : RD_FAST_VERSION;
+      const modelId = usePlus ? RD_PLUS_MODEL : RD_FAST_MODEL;
+      const allowedStyles = usePlus
+        ? [
+          "default",
+          "retro",
+          "watercolor",
+          "textured",
+          "cartoon",
+          "ui_element",
+          "item_sheet",
+          "character_turnaround",
+          "environment",
+          "isometric",
+          "isometric_asset",
+          "topdown_map",
+          "topdown_asset",
+          "classic",
+          "topdown_item",
+          "low_res",
+          "mc_item",
+          "mc_texture",
+          "skill_icon",
+        ]
+        : [
+          "default",
+          "simple",
+          "detailed",
+          "retro",
+          "game_asset",
+          "portrait",
+          "texture",
+          "ui",
+          "item_sheet",
+          "character_turnaround",
+          "1_bit",
+          "low_res",
+          "mc_item",
+          "mc_texture",
+          "no_style",
+        ];
+      const style = allowedStyles.includes(styleInput)
+        ? styleInput
+        : usePlus
+          ? "default"
+          : "game_asset";
+
+      const input: Record<string, unknown> = {
+        prompt,
+        style,
+        width: frameWidth,
+        height: frameHeight,
+        num_images: 1,
+        remove_bg: removeBg,
+      };
+
+      if (inputImagePath) {
+        input.input_image = await fileToDataUrl(inputImagePath);
+        input.strength = Math.min(1, Math.max(0, strength));
+      }
+      if (tileX) {
+        input.tile_x = true;
+      }
+      if (tileY) {
+        input.tile_y = true;
+      }
+      if (bypassPromptExpansion) {
+        input.bypass_prompt_expansion = true;
+      }
+      if (Number.isFinite(seed)) {
+        input.seed = seed;
+      }
+
+      const paletteInput = formData.get("inputPalette");
+      if (paletteInput && typeof paletteInput === "string") {
+        const parsed = parseDataUrl(paletteInput);
+        if (parsed) {
+          const ext = MIME_EXT[parsed.mime] ?? ".png";
+          const paletteFilename = `palette_${crypto.randomUUID()}${ext}`;
+          const palettePath = storagePath("animations", id, "keyframes", paletteFilename);
+          await fs.mkdir(path.dirname(palettePath), { recursive: true });
+          await fs.writeFile(palettePath, Buffer.from(parsed.data, "base64"));
+          input.input_palette = await fileToDataUrl(palettePath);
+          paletteUrl = `/api/storage/animations/${id}/keyframes/${paletteFilename}`;
+        } else {
+          input.input_palette = paletteInput;
+          paletteUrl = paletteInput;
+        }
+      } else if (paletteInput && typeof (paletteInput as File).arrayBuffer === "function") {
+        const paletteBuffer = Buffer.from(await (paletteInput as File).arrayBuffer());
+        const paletteFilename = `palette_${crypto.randomUUID()}.png`;
         const palettePath = storagePath("animations", id, "keyframes", paletteFilename);
         await fs.mkdir(path.dirname(palettePath), { recursive: true });
-        await fs.writeFile(palettePath, Buffer.from(parsed.data, "base64"));
+        await fs.writeFile(palettePath, paletteBuffer);
         input.input_palette = await fileToDataUrl(palettePath);
         paletteUrl = `/api/storage/animations/${id}/keyframes/${paletteFilename}`;
-      } else {
-        input.input_palette = paletteInput;
-        paletteUrl = paletteInput;
       }
-    } else if (paletteInput && typeof (paletteInput as File).arrayBuffer === "function") {
-      const paletteBuffer = Buffer.from(await (paletteInput as File).arrayBuffer());
-      const paletteFilename = `palette_${crypto.randomUUID()}.png`;
-      const palettePath = storagePath("animations", id, "keyframes", paletteFilename);
-      await fs.mkdir(path.dirname(palettePath), { recursive: true });
-      await fs.writeFile(palettePath, paletteBuffer);
-      input.input_palette = await fileToDataUrl(palettePath);
-      paletteUrl = `/api/storage/animations/${id}/keyframes/${paletteFilename}`;
+
+      const prediction = await runReplicateModel({
+        version,
+        model: modelId,
+        input,
+      });
+
+      const output = prediction.output;
+      const outputUrl =
+        (Array.isArray(output) ? output[0] : output) as string | undefined;
+
+      if (!outputUrl) {
+        return Response.json({ error: "No output returned." }, { status: 500 });
+      }
+
+      const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
+      if (!outputResponse.ok) {
+        return Response.json({ error: "Failed to download output." }, { status: 500 });
+      }
+      outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
     }
-
-    const prediction = await runReplicateModel({
-      version,
-      model: modelId,
-      input,
-    });
-
-    const output = prediction.output;
-    const outputUrl =
-      (Array.isArray(output) ? output[0] : output) as string | undefined;
-
-    if (!outputUrl) {
-      return Response.json({ error: "No output returned." }, { status: 500 });
-    }
-
-    const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
-    if (!outputResponse.ok) {
-      return Response.json({ error: "Failed to download output." }, { status: 500 });
-    }
-    outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
   } else if (file && typeof (file as File).arrayBuffer === "function") {
     const inputFile = file as File;
     outputBuffer = Buffer.from(await inputFile.arrayBuffer());
@@ -380,7 +463,7 @@ export async function POST(
     frameIndex,
     image: `/api/storage/animations/${id}/keyframes/${filename}`,
     prompt: promptInput || existingKeyframe?.prompt,
-    model: model === "rd-plus" ? "rd-plus" : "rd-fast",
+    model,
     strength: Math.min(1, Math.max(0, strength)),
     inputPalette: paletteUrl ?? existingKeyframe?.inputPalette,
     tileX,
@@ -406,7 +489,7 @@ export async function POST(
         url: `/api/storage/animations/${id}/generated/frames/frame_${String(frameIndex).padStart(3, "0")}.png`,
         isKeyframe: true,
         generatedAt: new Date().toISOString(),
-        source: model === "rd-plus" ? "rd-plus" : "rd-fast",
+        source: model,
       };
     });
     updatedAnimation.generatedFrames = updatedFrames;

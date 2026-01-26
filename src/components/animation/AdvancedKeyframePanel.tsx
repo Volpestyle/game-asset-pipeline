@@ -3,7 +3,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import type { Animation, Character } from "@/types";
+import { InterpolationGraph } from "./InterpolationGraph";
+import type { Animation, Character, EasingType } from "@/types";
 
 const RD_FAST_STYLES = [
   "game_asset",
@@ -47,7 +48,7 @@ const RD_PLUS_STYLES = [
 
 export interface KeyframeFormData {
   frameIndex: number;
-  model: "rd-fast" | "rd-plus";
+  model: "rd-fast" | "rd-plus" | "nano-banana-pro";
   prompt: string;
   style: string;
   strength: number;
@@ -59,6 +60,7 @@ export interface KeyframeFormData {
   tileY: boolean;
   seed: string;
   bypassPromptExpansion: boolean;
+  easing: EasingType;
 }
 
 interface AdvancedKeyframePanelProps {
@@ -70,7 +72,14 @@ interface AdvancedKeyframePanelProps {
   onClearKeyframe?: (frameIndex: number) => Promise<void>;
   onReferenceSelect?: (referenceImageId: string | null) => void;
   isWorking: boolean;
+  // Interpolation props
+  interpolationModel?: string;
+  onInterpolationModelChange?: (model: string) => void;
+  onInterpolate?: () => void;
+  isInterpolating?: boolean;
 }
+
+const STORAGE_KEY = "keyframe-panel-expanded";
 
 export function AdvancedKeyframePanel({
   animation,
@@ -81,7 +90,24 @@ export function AdvancedKeyframePanel({
   onClearKeyframe,
   onReferenceSelect,
   isWorking,
+  interpolationModel = "rd-plus",
+  onInterpolationModelChange,
+  onInterpolate,
+  isInterpolating = false,
 }: AdvancedKeyframePanelProps) {
+  const [expanded, setExpanded] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored === null ? true : stored === "true";
+  });
+
+  const toggleExpanded = () => {
+    setExpanded((prev) => {
+      const next = !prev;
+      localStorage.setItem(STORAGE_KEY, String(next));
+      return next;
+    });
+  };
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
@@ -107,9 +133,15 @@ export function AdvancedKeyframePanel({
     tileY: existingKeyframe?.tileY ?? false,
     seed: existingKeyframe?.seed?.toString() ?? "",
     bypassPromptExpansion: existingKeyframe?.bypassPromptExpansion ?? false,
+    easing: existingKeyframe?.easing ?? "linear",
   });
 
-  const styleOptions = formData.model === "rd-plus" ? RD_PLUS_STYLES : RD_FAST_STYLES;
+  const isRdModel = formData.model === "rd-fast" || formData.model === "rd-plus";
+  const styleOptions = isRdModel
+    ? formData.model === "rd-plus"
+      ? RD_PLUS_STYLES
+      : RD_FAST_STYLES
+    : ["default"];
 
   const handleAction = async (mode: "upload" | "generate" | "refine") => {
     await onKeyframeAction(mode, { ...formData, frameIndex: currentFrame });
@@ -122,6 +154,12 @@ export function AdvancedKeyframePanel({
       }
     };
   }, [filePreviewUrl]);
+
+  useEffect(() => {
+    if (!isRdModel && formData.style !== "default") {
+      setFormData((prev) => ({ ...prev, style: "default" }));
+    }
+  }, [formData.style, isRdModel]);
 
   const handleFile = (file: File | null) => {
     setFormData((prev) => ({ ...prev, file }));
@@ -185,16 +223,22 @@ export function AdvancedKeyframePanel({
 
   return (
     <div className="tech-border bg-card">
-      <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-        <span className="text-xs text-muted-foreground tracking-wider">Keyframe Controls</span>
+      <button
+        onClick={toggleExpanded}
+        className="w-full px-4 py-3 border-b border-border flex items-center justify-between hover:bg-muted/30 transition-colors"
+      >
+        <span className="text-xs text-muted-foreground tracking-wider">KEYFRAME CONTROLS</span>
         <div className="flex items-center gap-2">
           {existingKeyframe && (
             <span className="text-[10px] text-success">Has Keyframe</span>
           )}
+          <span className="text-xs text-muted-foreground">
+            {expanded ? "−" : "+"}
+          </span>
         </div>
-      </div>
+      </button>
 
-      <div className="p-4 space-y-4">
+      {expanded && <div className="p-4 space-y-4">
         {/* Frame selection row */}
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
@@ -235,11 +279,17 @@ export function AdvancedKeyframePanel({
             </label>
             <select
               value={formData.model}
-              onChange={(e) => setFormData((prev) => ({ ...prev, model: e.target.value as "rd-fast" | "rd-plus" }))}
+              onChange={(e) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  model: e.target.value as KeyframeFormData["model"],
+                }))
+              }
               className="terminal-input w-full h-9 px-3 text-sm bg-card"
             >
               <option value="rd-fast">rd-fast (faster)</option>
               <option value="rd-plus">rd-plus (higher quality)</option>
+              <option value="nano-banana-pro">nano-banana-pro (general)</option>
             </select>
           </div>
         </div>
@@ -267,6 +317,7 @@ export function AdvancedKeyframePanel({
               value={formData.style}
               onChange={(e) => setFormData((prev) => ({ ...prev, style: e.target.value }))}
               className="terminal-input w-full h-9 px-3 text-sm bg-card"
+              disabled={!isRdModel}
             >
               {styleOptions.map((style) => (
                 <option key={style} value={style}>
@@ -274,6 +325,11 @@ export function AdvancedKeyframePanel({
                 </option>
               ))}
             </select>
+            {!isRdModel && (
+              <p className="text-[10px] text-muted-foreground">
+                Style tags are only used for rd-fast/rd-plus.
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -289,6 +345,11 @@ export function AdvancedKeyframePanel({
               onChange={(e) => setFormData((prev) => ({ ...prev, strength: Number(e.target.value) }))}
               className="w-full h-9"
             />
+            {!isRdModel && (
+              <p className="text-[10px] text-muted-foreground">
+                Strength is ignored for nano-banana-pro.
+              </p>
+            )}
           </div>
         </div>
 
@@ -341,7 +402,7 @@ export function AdvancedKeyframePanel({
                         <img
                           src={ref.url}
                           alt={`${ref.type} reference`}
-                          className="w-12 h-12 object-cover"
+                          className="w-12 h-12 object-contain bg-muted/20"
                         />
                         {isSelected && (
                           <span className="absolute top-0 left-0 bg-primary text-primary-foreground text-[7px] px-1">
@@ -446,6 +507,72 @@ export function AdvancedKeyframePanel({
           />
           Remove background
         </label>
+        {!isRdModel && (
+          <p className="text-[10px] text-muted-foreground">
+            Background removal is only supported for rd-fast/rd-plus.
+          </p>
+        )}
+
+        {/* Easing and Interpolation Graph */}
+        <div className="pt-2 border-t border-border space-y-3">
+          <div className="flex items-start justify-between">
+            <div className="space-y-2 flex-1 mr-4">
+              <label className="text-[10px] text-muted-foreground tracking-widest">
+                Interpolation Easing
+              </label>
+              <select
+                value={formData.easing}
+                onChange={(e) => setFormData((prev) => ({ ...prev, easing: e.target.value as EasingType }))}
+                className="terminal-input w-full h-9 px-3 text-sm bg-card"
+              >
+                <option value="linear">Linear</option>
+                <option value="ease-in">Ease In (Accelerate)</option>
+                <option value="ease-out">Ease Out (Decelerate)</option>
+                <option value="ease-in-out">Ease In-Out (Smooth)</option>
+                <option value="hold">Hold (No tween)</option>
+              </select>
+              <p className="text-[10px] text-muted-foreground">
+                How this frame transitions to the next keyframe.
+              </p>
+            </div>
+            
+            <div className="flex flex-col items-center">
+              <InterpolationGraph easing={formData.easing} width={80} height={40} className="border border-border bg-card/50" />
+            </div>
+          </div>
+        </div>
+
+        {/* Global Interpolation Action (if props provided) */}
+        {onInterpolate && (
+          <div className="pt-2 border-t border-border space-y-2">
+            <div className="flex items-center justify-between">
+               <label className="text-[10px] text-muted-foreground tracking-widest">
+                Interpolate Gaps
+              </label> 
+            </div>
+            <div className="flex gap-2">
+              <select
+                value={interpolationModel}
+                onChange={(e) => onInterpolationModelChange?.(e.target.value)}
+                className="terminal-input flex-1 h-8 px-2 text-xs bg-card"
+              >
+                <option value="rd-plus">rd-plus (Quality)</option>
+                <option value="rd-fast">rd-fast (Speed)</option>
+                <option value="nano-banana-pro">nano-banana-pro (General)</option>
+              </select>
+              <Button
+                onClick={onInterpolate}
+                disabled={isInterpolating}
+                className="h-8 px-3 text-[10px] tracking-wider"
+              >
+                {isInterpolating ? "RUNNING..." : "RUN"}
+              </Button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Fills all keyframe gaps using the selected model.
+            </p>
+          </div>
+        )}
 
         {/* Advanced toggle */}
         <button
@@ -462,80 +589,88 @@ export function AdvancedKeyframePanel({
               Advanced Options (rd-fast / rd-plus)
             </div>
 
-            {/* Palette upload */}
-            <div className="space-y-2">
-              <label className="text-[10px] text-muted-foreground tracking-widest">
-                Input Palette (optional)
-              </label>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={handlePaletteUpload}
-                className="text-xs text-muted-foreground"
-              />
-              {formData.inputPalette && (
-                <div className="flex items-center gap-2">
-                  <img
-                    src={formData.inputPalette}
-                    alt="Palette"
-                    className="w-16 h-4 object-cover border border-border"
+            {isRdModel ? (
+              <>
+                {/* Palette upload */}
+                <div className="space-y-2">
+                  <label className="text-[10px] text-muted-foreground tracking-widest">
+                    Input Palette (optional)
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handlePaletteUpload}
+                    className="text-xs text-muted-foreground"
                   />
-                  <button
-                    onClick={() => setFormData((prev) => ({ ...prev, inputPalette: "" }))}
-                    className="text-[10px] text-destructive hover:underline"
-                  >
-                    CLEAR
-                  </button>
+                  {formData.inputPalette && (
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={formData.inputPalette}
+                        alt="Palette"
+                        className="w-16 h-4 object-cover border border-border"
+                      />
+                      <button
+                        onClick={() => setFormData((prev) => ({ ...prev, inputPalette: "" }))}
+                        className="text-[10px] text-destructive hover:underline"
+                      >
+                        CLEAR
+                      </button>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
 
-            {/* Tile options */}
-            <div className="flex gap-6">
-              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={formData.tileX}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, tileX: e.target.checked }))}
-                  className="form-checkbox"
-                />
-                Tile X (seamless horizontal)
-              </label>
-              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={formData.tileY}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, tileY: e.target.checked }))}
-                  className="form-checkbox"
-                />
-                Tile Y (seamless vertical)
-              </label>
-            </div>
+                {/* Tile options */}
+                <div className="flex gap-6">
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.tileX}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, tileX: e.target.checked }))}
+                      className="form-checkbox"
+                    />
+                    Tile X (seamless horizontal)
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.tileY}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, tileY: e.target.checked }))}
+                      className="form-checkbox"
+                    />
+                    Tile Y (seamless vertical)
+                  </label>
+                </div>
 
-            {/* Seed */}
-            <div className="space-y-2">
-              <label className="text-[10px] text-muted-foreground tracking-widest">
-                Seed (optional, for reproducibility)
-              </label>
-              <input
-                type="number"
-                value={formData.seed}
-                onChange={(e) => setFormData((prev) => ({ ...prev, seed: e.target.value }))}
-                placeholder="Random if empty"
-                className="terminal-input w-full h-9 px-3 text-sm bg-card"
-              />
-            </div>
+                {/* Seed */}
+                <div className="space-y-2">
+                  <label className="text-[10px] text-muted-foreground tracking-widest">
+                    Seed (optional, for reproducibility)
+                  </label>
+                  <input
+                    type="number"
+                    value={formData.seed}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, seed: e.target.value }))}
+                    placeholder="Random if empty"
+                    className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                  />
+                </div>
 
-            {/* Bypass prompt expansion */}
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                checked={formData.bypassPromptExpansion}
-                onChange={(e) => setFormData((prev) => ({ ...prev, bypassPromptExpansion: e.target.checked }))}
-                className="form-checkbox"
-              />
-              Bypass prompt expansion (use prompt as-is)
-            </label>
+                {/* Bypass prompt expansion */}
+                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.bypassPromptExpansion}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, bypassPromptExpansion: e.target.checked }))}
+                    className="form-checkbox"
+                  />
+                  Bypass prompt expansion (use prompt as-is)
+                </label>
+              </>
+            ) : (
+              <p className="text-[10px] text-muted-foreground">
+                Advanced options are only supported for rd-fast and rd-plus.
+              </p>
+            )}
           </div>
         )}
 
@@ -573,7 +708,7 @@ export function AdvancedKeyframePanel({
             CLEAR
           </Button>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }
