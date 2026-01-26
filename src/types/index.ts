@@ -161,8 +161,11 @@ export interface Keyframe {
   removeBg?: boolean;
   seed?: number;
   bypassPromptExpansion?: boolean;
+  easing?: EasingType;
   updatedAt?: string;
 }
+
+export type EasingType = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold';
 
 export interface GeneratedFrame {
   frameIndex: number;
