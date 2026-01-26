@@ -95,7 +95,7 @@ export function FrameStrip({
                   else frameRefs.current.delete(index);
                 }}
                 onClick={() => onFrameChange(index)}
-                className={`relative flex-shrink-0 w-12 h-12 border-2 transition-all duration-150 group ${
+                className={`relative flex-shrink-0 w-16 h-16 border-2 transition-all duration-150 group ${
                   isCurrent
                     ? "border-primary bg-primary/20 ring-2 ring-primary/30"
                     : hasKeyframe
@@ -109,7 +109,7 @@ export function FrameStrip({
                   <img
                     src={image}
                     alt={`Frame ${index}`}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-contain bg-muted/20"
                     style={{ imageRendering: "pixelated" }}
                   />
                 ) : (

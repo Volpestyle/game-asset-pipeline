@@ -4,13 +4,19 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout";
-import type { AnimationStyle, Character } from "@/types";
+import type { AnimationStyle, Character, PromptProfile } from "@/types";
+import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
 import {
   EXTRACT_FPS_OPTIONS,
-  VIDEO_SECONDS_OPTIONS,
   coerceVideoSizeForModel,
+  coerceVideoSecondsForModel,
   getDefaultVideoSize,
+  getDefaultVideoSeconds,
   getVideoSizeOptions,
+  getVideoSecondsOptions,
+  getVideoModelOptions,
+  getVideoProviderForModel,
+  getVideoModelPromptProfile,
   isSizeValidForModel,
   getExpectedFrameCount,
 } from "@/components/animation";
@@ -24,14 +30,14 @@ const STYLE_OPTIONS: { value: AnimationStyle; label: string; code: string }[] = 
   { value: "custom", label: "Custom", code: "CST" },
 ];
 
-const MODEL_OPTIONS = [
-  { value: "sora-2", label: "sora-2 (draft)" },
-  { value: "sora-2-pro", label: "sora-2-pro (final)" },
-];
-
 const LOOP_OPTIONS: { value: "pingpong" | "loop"; label: string }[] = [
   { value: "pingpong", label: "Ping-pong (safe loop)" },
   { value: "loop", label: "Loop (start/end must match)" },
+];
+
+const PROMPT_PROFILE_OPTIONS: { value: PromptProfile; label: string }[] = [
+  { value: "concise", label: "Concise" },
+  { value: "verbose", label: "Verbose" },
 ];
 
 const NewAnimationForm = () => {
@@ -46,10 +52,25 @@ const NewAnimationForm = () => {
   const [style, setStyle] = useState<AnimationStyle>("idle");
   const defaultModel = "sora-2";
   const [generationModel, setGenerationModel] = useState(defaultModel);
-  const [generationSeconds, setGenerationSeconds] = useState(4);
+  const [generationSeconds, setGenerationSeconds] = useState(() =>
+    getDefaultVideoSeconds(defaultModel)
+  );
   const [generationSize, setGenerationSize] = useState(() =>
     getDefaultVideoSize(defaultModel)
   );
+  const [generationLoop, setGenerationLoop] = useState(false);
+  const [tooncrafterInterpolate, setTooncrafterInterpolate] = useState(false);
+  const [tooncrafterColorCorrection, setTooncrafterColorCorrection] = useState(true);
+  const [tooncrafterSeed, setTooncrafterSeed] = useState("");
+  const [promptProfile, setPromptProfile] = useState<PromptProfile>(() =>
+    getVideoModelPromptProfile(defaultModel)
+  );
+  const [promptProfileTouched, setPromptProfileTouched] = useState(false);
+  const [promptConcise, setPromptConcise] = useState("");
+  const [promptVerbose, setPromptVerbose] = useState("");
+  const [isPromptEditing, setIsPromptEditing] = useState(false);
+  const [draftPromptConcise, setDraftPromptConcise] = useState("");
+  const [draftPromptVerbose, setDraftPromptVerbose] = useState("");
   const [extractFps, setExtractFps] = useState(6);
   const [loopMode, setLoopMode] = useState<"pingpong" | "loop">("loop");
   const [sheetColumns, setSheetColumns] = useState(6);
@@ -61,7 +82,10 @@ const NewAnimationForm = () => {
     [characters, characterId]
   );
 
-  const canCreate = characterId && name.trim() && description.trim();
+  const canCreate =
+    Boolean(characterId) &&
+    Boolean(name.trim()) &&
+    (style !== "custom" || Boolean(description.trim()));
   const expectedFrameCount = getExpectedFrameCount(generationSeconds, extractFps);
   const loopedFrameCount =
     loopMode === "pingpong"
@@ -70,10 +94,50 @@ const NewAnimationForm = () => {
 
   const frameWidth = selectedCharacter?.baseWidth ?? 253;
   const frameHeight = selectedCharacter?.baseHeight ?? 504;
+  const autoPromptConcise = useMemo(
+    () =>
+      buildVideoPrompt({
+        description,
+        style,
+        artStyle: selectedCharacter?.style ?? "pixel-art",
+        bgKeyColor: selectedCharacter?.workingSpec?.bgKeyColor,
+        promptProfile: "concise",
+      }),
+    [description, style, selectedCharacter?.style, selectedCharacter?.workingSpec?.bgKeyColor]
+  );
+  const autoPromptVerbose = useMemo(
+    () =>
+      buildVideoPrompt({
+        description,
+        style,
+        artStyle: selectedCharacter?.style ?? "pixel-art",
+        bgKeyColor: selectedCharacter?.workingSpec?.bgKeyColor,
+        promptProfile: "verbose",
+      }),
+    [description, style, selectedCharacter?.style, selectedCharacter?.workingSpec?.bgKeyColor]
+  );
+  const effectivePromptConcise = promptConcise.trim()
+    ? promptConcise
+    : autoPromptConcise;
+  const effectivePromptVerbose = promptVerbose.trim()
+    ? promptVerbose
+    : autoPromptVerbose;
+  const promptPreview = isPromptEditing
+    ? promptProfile === "concise"
+      ? draftPromptConcise
+      : draftPromptVerbose
+    : promptProfile === "concise"
+    ? effectivePromptConcise
+    : effectivePromptVerbose;
   const sizeOptions = useMemo(
     () => getVideoSizeOptions(generationModel),
     [generationModel]
   );
+  const durationOptions = useMemo(
+    () => getVideoSecondsOptions(generationModel),
+    [generationModel]
+  );
+  const modelOptions = useMemo(() => getVideoModelOptions(), []);
 
   const loadCharacters = async () => {
     try {
@@ -88,6 +152,13 @@ const NewAnimationForm = () => {
   useEffect(() => {
     void loadCharacters();
   }, []);
+
+  useEffect(() => {
+    if (!isPromptEditing) {
+      setDraftPromptConcise(effectivePromptConcise);
+      setDraftPromptVerbose(effectivePromptVerbose);
+    }
+  }, [effectivePromptConcise, effectivePromptVerbose, isPromptEditing]);
 
   const handleCreate = async () => {
     if (!canCreate) return;
@@ -104,10 +175,19 @@ const NewAnimationForm = () => {
           name: name.trim(),
           description: description.trim(),
           style,
-          generationProvider: "openai",
+          generationProvider: getVideoProviderForModel(generationModel),
           generationModel,
+          promptProfile,
+          promptConcise,
+          promptVerbose,
           generationSeconds,
           generationSize,
+          generationLoop,
+          tooncrafterInterpolate,
+          tooncrafterColorCorrection,
+          tooncrafterSeed: tooncrafterSeed.trim()
+            ? Number(tooncrafterSeed)
+            : null,
           extractFps,
           loopMode,
           sheetColumns,
@@ -273,6 +353,102 @@ const NewAnimationForm = () => {
             </div>
           </section>
 
+          <section className="space-y-2">
+            <div>
+              <p className="text-xs text-muted-foreground tracking-wider mb-1">Prompt Preview</p>
+              <p className="text-sm font-medium">Generation Prompt</p>
+            </div>
+            <div className="tech-border bg-card p-4 space-y-2">
+              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                <span className="tracking-widest">Profile</span>
+                <span className="text-primary">{promptProfile}</span>
+              </div>
+              <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words">
+                {promptPreview}
+              </div>
+            </div>
+          </section>
+
+          <section className="space-y-3">
+            <div>
+              <p className="text-xs text-muted-foreground tracking-wider mb-1">Prompt Overrides</p>
+              <p className="text-sm font-medium">Concise + Verbose</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setDraftPromptConcise(effectivePromptConcise);
+                  setDraftPromptVerbose(effectivePromptVerbose);
+                  setIsPromptEditing(true);
+                }}
+                disabled={isPromptEditing}
+                className="px-3 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary disabled:opacity-50"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPromptConcise(draftPromptConcise);
+                  setPromptVerbose(draftPromptVerbose);
+                  setIsPromptEditing(false);
+                }}
+                disabled={!isPromptEditing}
+                className="px-3 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary disabled:opacity-50"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPromptConcise("");
+                  setPromptVerbose("");
+                  setDraftPromptConcise(autoPromptConcise);
+                  setDraftPromptVerbose(autoPromptVerbose);
+                  setIsPromptEditing(false);
+                }}
+                className="px-3 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary"
+              >
+                Reset
+              </button>
+            </div>
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="tech-border bg-card p-4 space-y-2">
+                <p className="text-xs text-muted-foreground tracking-wider">Concise Prompt</p>
+                <textarea
+                  value={isPromptEditing ? draftPromptConcise : effectivePromptConcise}
+                  onChange={(event) => {
+                    setDraftPromptConcise(event.target.value);
+                  }}
+                  rows={4}
+                  placeholder={autoPromptConcise}
+                  disabled={!isPromptEditing}
+                  className="terminal-input w-full p-3 text-xs bg-card resize-none"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Leave blank to auto-generate from description + preset.
+                </p>
+              </div>
+              <div className="tech-border bg-card p-4 space-y-2">
+                <p className="text-xs text-muted-foreground tracking-wider">Verbose Prompt</p>
+                <textarea
+                  value={isPromptEditing ? draftPromptVerbose : effectivePromptVerbose}
+                  onChange={(event) => {
+                    setDraftPromptVerbose(event.target.value);
+                  }}
+                  rows={4}
+                  placeholder={autoPromptVerbose}
+                  disabled={!isPromptEditing}
+                  className="terminal-input w-full p-3 text-xs bg-card resize-none"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Leave blank to auto-generate with full constraints.
+                </p>
+              </div>
+            </div>
+          </section>
+
           <section className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
             <div className="tech-border bg-card p-4 space-y-2">
               <p className="text-xs text-muted-foreground tracking-wider">Model</p>
@@ -283,26 +459,59 @@ const NewAnimationForm = () => {
                   const nextSize = isSizeValidForModel(generationSize, nextModel)
                     ? generationSize
                     : coerceVideoSizeForModel(generationSize, nextModel);
+                  const nextSeconds = coerceVideoSecondsForModel(
+                    generationSeconds,
+                    nextModel
+                  );
+                  if (!promptProfileTouched) {
+                    setPromptProfile(getVideoModelPromptProfile(nextModel));
+                  }
                   setGenerationModel(nextModel);
                   setGenerationSize(nextSize);
+                  setGenerationSeconds(nextSeconds);
                 }}
                 className="terminal-input w-full h-9 px-3 text-sm bg-card"
               >
-                {MODEL_OPTIONS.map((option) => (
+                {modelOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
                 ))}
               </select>
               <p className="text-[10px] text-muted-foreground">
-                Draft for fast iteration, pro for higher fidelity.
+                Pick the provider and fidelity level that fit your output.
+              </p>
+            </div>
+
+            <div className="tech-border bg-card p-4 space-y-2">
+              <p className="text-xs text-muted-foreground tracking-wider">Prompt Profile</p>
+              <div className="flex flex-wrap gap-2">
+                {PROMPT_PROFILE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    onClick={() => {
+                      setPromptProfile(option.value);
+                      setPromptProfileTouched(true);
+                    }}
+                    className={`px-3 py-1 text-xs border ${
+                      promptProfile === option.value
+                        ? "border-primary text-primary"
+                        : "border-border text-muted-foreground hover:border-primary/50"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Concise keeps prompts short. Verbose adds stricter constraints.
               </p>
             </div>
 
             <div className="tech-border bg-card p-4 space-y-2">
               <p className="text-xs text-muted-foreground tracking-wider">Clip Duration</p>
               <div className="flex flex-wrap gap-2">
-                {VIDEO_SECONDS_OPTIONS.map((value) => (
+                {durationOptions.map((value) => (
                   <button
                     key={value}
                     onClick={() => setGenerationSeconds(value)}
@@ -336,6 +545,52 @@ const NewAnimationForm = () => {
                 ))}
               </div>
             </div>
+
+            {generationModel === "tooncrafter" && (
+              <div className="tech-border bg-card p-4 space-y-3">
+                <p className="text-xs text-muted-foreground tracking-wider">ToonCrafter Options</p>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={generationLoop}
+                    onChange={(event) => setGenerationLoop(event.target.checked)}
+                    className="form-checkbox"
+                  />
+                  Loop output
+                </label>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={tooncrafterInterpolate}
+                    onChange={(event) => setTooncrafterInterpolate(event.target.checked)}
+                    className="form-checkbox"
+                  />
+                  Interpolate (2x)
+                </label>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={tooncrafterColorCorrection}
+                    onChange={(event) => setTooncrafterColorCorrection(event.target.checked)}
+                    className="form-checkbox"
+                  />
+                  Color correction
+                </label>
+                <div className="space-y-1">
+                  <p className="text-[10px] text-muted-foreground tracking-wider">Seed</p>
+                  <input
+                    type="number"
+                    value={tooncrafterSeed}
+                    onChange={(event) => setTooncrafterSeed(event.target.value)}
+                    placeholder="Random"
+                    className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Leave blank for random.
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="tech-border bg-card p-4 space-y-2">
               <p className="text-xs text-muted-foreground tracking-wider">Extract FPS</p>
