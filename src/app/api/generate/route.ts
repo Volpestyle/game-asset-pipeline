@@ -2,13 +2,21 @@ import { promises as fs } from "fs";
 import path from "path";
 import { spawn } from "child_process";
 import sharp from "sharp";
-import { runReplicateModel } from "@/lib/ai/replicate";
+import {
+  createPrediction,
+  runReplicateModel,
+  waitForPrediction,
+} from "@/lib/ai/replicate";
 import {
   createVideoJob,
   downloadVideoContent,
   pollVideoJob,
 } from "@/lib/ai/openai";
-import { buildWorkingReference } from "@/lib/character/workingReference";
+import {
+  buildWorkingReference,
+  normalizeImageToCanvas,
+} from "@/lib/character/workingReference";
+import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
 import { getShutdownSignal } from "@/lib/shutdown";
 import { composeSpritesheet, extractFrames } from "@/lib/spritesheet";
 import {
@@ -16,14 +24,22 @@ import {
   fileExists,
   readJson,
   storagePath,
+  storagePathFromUrl,
   writeJson,
 } from "@/lib/storage";
 import { createAnimationVersion } from "@/lib/animationVersions";
 import {
   coerceVideoSizeForModel,
   getDefaultVideoSize,
+  getDefaultVideoSeconds,
+  coerceVideoSecondsForModel,
+  getVideoProviderForModel,
+  getVideoModelConfig,
+  getReplicateModelForVideo,
+  getVideoAspectRatio,
+  getVideoResolution,
 } from "@/lib/ai/soraConstraints";
-import type { AnimationStyle } from "@/types";
+import type { AnimationStyle, Keyframe } from "@/types";
 
 export const runtime = "nodejs";
 
@@ -62,6 +78,19 @@ async function fileToDataUrl(filePath: string) {
   return `data:${mime};base64,${buffer.toString("base64")}`;
 }
 
+function bufferToDataUrl(buffer: Buffer, mime = "image/png") {
+  return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
+async function resolveLocalImagePath(url?: string) {
+  if (!url) return null;
+  const localPath = storagePathFromUrl(url);
+  if (localPath && (await fileExists(localPath))) {
+    return localPath;
+  }
+  return null;
+}
+
 function parseSize(size: string) {
   const [w, h] = size.split("x").map((value) => Number(value));
   const width = Number.isFinite(w) ? w : 1024;
@@ -69,72 +98,79 @@ function parseSize(size: string) {
   return { width, height };
 }
 
-const ANIMATION_STYLE_HINTS: Record<string, string> = {
-  idle: "subtle breathing, gentle sway, standing in relaxed pose",
-};
+function parseHexColor(color: string) {
+  const cleaned = color.replace("#", "").trim();
+  if (cleaned.length !== 6) {
+    return { r: 255, g: 0, b: 255 };
+  }
+  const r = Number.parseInt(cleaned.slice(0, 2), 16);
+  const g = Number.parseInt(cleaned.slice(2, 4), 16);
+  const b = Number.parseInt(cleaned.slice(4, 6), 16);
+  return {
+    r: Number.isFinite(r) ? r : 255,
+    g: Number.isFinite(g) ? g : 0,
+    b: Number.isFinite(b) ? b : 255,
+  };
+}
 
-const ART_STYLE_PROMPTS: Record<
-  string,
-  { label: string; constraints: string[] }
-> = {
-  "pixel-art": {
-    label: "pixel art sprite",
-    constraints: [
-      "limited color palette",
-      "crisp hard edges",
-      "no anti-aliasing",
-      "no motion blur",
-    ],
-  },
-  "hand-drawn": {
-    label: "hand-drawn 2d sprite",
-    constraints: ["clean linework", "flat shading", "no motion blur"],
-  },
-  "3d-rendered": {
-    label: "3d rendered character sprite",
-    constraints: ["clean lighting", "no motion blur"],
-  },
-  anime: {
-    label: "anime-style character sprite",
-    constraints: ["clean lineart", "cel shading", "no motion blur"],
-  },
-  realistic: {
-    label: "realistic character sprite",
-    constraints: ["natural lighting", "no motion blur"],
-  },
-  custom: {
-    label: "character sprite",
-    constraints: ["no motion blur"],
-  },
-};
+async function resolveImageDimensions(filePath: string) {
+  try {
+    const metadata = await sharp(filePath).metadata();
+    if (metadata.width && metadata.height) {
+      return { width: metadata.width, height: metadata.height };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
-function buildSoraPrompt(options: {
-  description: string;
-  style?: string;
-  artStyle?: string;
-  bgKeyColor?: string;
+function sampleEvenly<T>(items: T[], count: number) {
+  if (items.length <= count) return items;
+  const lastIndex = items.length - 1;
+  const selected = new Set<number>();
+  for (let i = 0; i < count; i += 1) {
+    const idx = Math.round((i * lastIndex) / (count - 1));
+    selected.add(idx);
+  }
+  if (selected.size < count) {
+    for (let i = 0; i < items.length && selected.size < count; i += 1) {
+      selected.add(i);
+    }
+  }
+  return Array.from(selected)
+    .sort((a, b) => a - b)
+    .map((index) => items[index]);
+}
+
+async function buildKeyframeCanvas(options: {
+  sourcePath: string;
+  spec: {
+    canvasW: number;
+    canvasH: number;
+    roi: { x: number; y: number; w: number; h: number };
+    bgKeyColor: string;
+  };
 }) {
-  const bg = options.bgKeyColor ?? DEFAULT_BG_KEY;
-  const styleKey = options.style ?? "";
-  const styleHint = ANIMATION_STYLE_HINTS[styleKey] ?? (styleKey ? `${styleKey} animation` : "");
-  const artStyleKey = options.artStyle ?? "pixel-art";
-  const artConfig =
-    ART_STYLE_PROMPTS[artStyleKey] ?? ART_STYLE_PROMPTS.custom;
-  const parts = [
-    options.description,
-    styleHint,
-    artConfig.label,
-    ...artConfig.constraints,
-    "static camera",
-    "character stays centered, no camera movement",
-    "keep proportions and identity identical to reference",
-    "seamless looping animation, first and last pose match",
-    `pure solid magenta background (${bg}), perfectly uniform, no gradients or shadows`,
-  ]
-    .filter(Boolean)
-    .join(", ");
-
-  return parts;
+  const { spec } = options;
+  const sprite = await sharp(options.sourcePath)
+    .resize(spec.roi.w, spec.roi.h, {
+      kernel: "nearest",
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png()
+    .toBuffer();
+  const bg = parseHexColor(spec.bgKeyColor);
+  const composed = sharp({
+    create: {
+      width: spec.canvasW,
+      height: spec.canvasH,
+      channels: 4,
+      background: { r: bg.r, g: bg.g, b: bg.b, alpha: 1 },
+    },
+  }).composite([{ input: sprite, left: spec.roi.x, top: spec.roi.y }]);
+  return composed.png().toBuffer();
 }
 
 async function runFfmpeg(args: string[]) {
@@ -305,6 +341,42 @@ async function ensureWorkingReference(options: {
   return { workingPath: outputPath, workingSpec: result.workingSpec };
 }
 
+async function normalizeGenerationFrame(options: {
+  animationId: string;
+  kind: "start" | "end";
+  sourcePath: string;
+  generationSize: string;
+  bgKeyColor?: string;
+}) {
+  const { width, height } = parseSize(options.generationSize);
+  const outputDir = storagePath(
+    "animations",
+    options.animationId,
+    "generation",
+    "normalized"
+  );
+  await fs.mkdir(outputDir, { recursive: true });
+  const baseName = path.basename(
+    options.sourcePath,
+    path.extname(options.sourcePath)
+  );
+  const outputPath = path.join(
+    outputDir,
+    `${options.kind}_${baseName}_${width}x${height}.png`
+  );
+  if (await fileExists(outputPath)) {
+    return outputPath;
+  }
+  await normalizeImageToCanvas({
+    sourcePath: options.sourcePath,
+    outputPath,
+    canvasW: width,
+    canvasH: height,
+    bgKeyColor: options.bgKeyColor,
+  });
+  return outputPath;
+}
+
 async function runGeneration(animationId: string) {
   const filePath = storagePath("animations", animationId, "animation.json");
   let animation = await readJson<Record<string, unknown>>(filePath);
@@ -360,123 +432,431 @@ async function runGeneration(animationId: string) {
       ? storagePath("characters", characterId, "references", filename)
       : null;
 
-    const provider = String(animation.generationProvider ?? "openai");
-    const useOpenAI = provider === "openai";
+    const model = String(animation.generationModel ?? "sora-2");
+    const modelConfig = getVideoModelConfig(model);
+    const requestedProvider = String(animation.generationProvider ?? "");
+    const modelProvider = getVideoProviderForModel(model);
+    const provider = requestedProvider === "replicate" ? "replicate" : modelProvider;
+    const requestedSize = String(
+      animation.generationSize ?? getDefaultVideoSize(model)
+    );
+    const size = coerceVideoSizeForModel(requestedSize, model);
+    const requestedSeconds = Number(
+      animation.generationSeconds ?? getDefaultVideoSeconds(model)
+    );
+    const seconds = coerceVideoSecondsForModel(requestedSeconds, model);
+    const requestedFps = Number(animation.extractFps ?? animation.fps ?? 6);
+    const extractFps = [6, 8, 12].includes(requestedFps) ? requestedFps : 6;
+    const loopMode =
+      String(animation.loopMode ?? "loop") === "pingpong" ? "pingpong" : "loop";
+    const sheetColumns = Math.max(1, Number(animation.sheetColumns ?? 6));
+    const frameWidth = Number(animation.frameWidth ?? character.baseWidth ?? 253);
+    const frameHeight = Number(animation.frameHeight ?? character.baseHeight ?? 504);
+    const expectedFrameCount = Math.max(1, Math.round(seconds * extractFps));
 
-    if (useOpenAI) {
-      if (!process.env.OPENAI_API_KEY?.trim()) {
-        throw new Error("Missing OPENAI_API_KEY. Add it to .env.local and restart the dev server.");
-      }
+    const updates: Record<string, unknown> = {};
+    const notes: string[] = [];
+    if (size !== requestedSize) {
+      notes.push(`Adjusted video size to ${size} for ${model}.`);
+      updates.generationSize = size;
+    }
+    if (seconds !== requestedSeconds) {
+      notes.push(`Adjusted clip duration to ${seconds}s for ${model}.`);
+      updates.generationSeconds = seconds;
+    }
+    if (expectedFrameCount !== Number(animation.frameCount ?? expectedFrameCount)) {
+      updates.frameCount = expectedFrameCount;
+    }
+    if (String(animation.generationProvider ?? "") !== provider) {
+      updates.generationProvider = provider;
+    }
+    if (notes.length) {
+      updates.generationNote = notes.join(" ");
+    }
+    if (Object.keys(updates).length) {
+      await updateAnimation(updates);
+    }
+    let generationNote =
+      (updates.generationNote as string | undefined) ??
+      (animation.generationNote as string | undefined);
+
+    const replicateModel = getReplicateModelForVideo(model);
+    const useOpenAI = provider === "openai";
+    const useReplicateVideo = provider === "replicate" && replicateModel;
+
+    if (useOpenAI || useReplicateVideo) {
       if (!referencePath) {
         throw new Error("Reference image not found.");
       }
-
-      const model = String(animation.generationModel ?? "sora-2");
-      const requestedSize = String(
-        animation.generationSize ?? getDefaultVideoSize(model)
-      );
-      const size = coerceVideoSizeForModel(requestedSize, model);
-      let generationNote: string | undefined;
-      if (size !== requestedSize) {
-        generationNote = `Adjusted video size to ${size} for ${model}.`;
-        await updateAnimation({ generationSize: size, generationNote });
+      if (useOpenAI && !process.env.OPENAI_API_KEY?.trim()) {
+        throw new Error("Missing OPENAI_API_KEY. Add it to .env.local and restart the dev server.");
       }
-      const requestedSeconds = Number(animation.generationSeconds ?? 4);
-      const seconds = [4, 8, 12].includes(requestedSeconds)
-        ? requestedSeconds
-        : 4;
-      const requestedFps = Number(animation.extractFps ?? animation.fps ?? 6);
-      const extractFps = [6, 8, 12].includes(requestedFps) ? requestedFps : 6;
-      const loopMode =
-        String(animation.loopMode ?? "loop") === "pingpong" ? "pingpong" : "loop";
-      const sheetColumns = Math.max(1, Number(animation.sheetColumns ?? 6));
-      const frameWidth = Number(animation.frameWidth ?? character.baseWidth ?? 253);
-      const frameHeight = Number(animation.frameHeight ?? character.baseHeight ?? 504);
+      if (useReplicateVideo && !process.env.REPLICATE_API_TOKEN?.trim()) {
+        throw new Error("Missing REPLICATE_API_TOKEN. Add it to .env.local and restart the dev server.");
+      }
 
-      const { workingPath, workingSpec } = await ensureWorkingReference({
+      const isToonCrafter = modelConfig.id === "tooncrafter";
+      let workingPath = "";
+      let workingSpec: {
+        canvasW: number;
+        canvasH: number;
+        scale: number;
+        roi: { x: number; y: number; w: number; h: number };
+        bgKeyColor: string;
+      };
+      let selectedKeyframes: Keyframe[] = [];
+      let keyframePaths: string[] = [];
+      let effectiveSize = size;
+
+      const appendGenerationNote = async (note: string) => {
+        generationNote = generationNote ? `${generationNote} ${note}` : note;
+        await updateAnimation({ generationNote });
+      };
+
+      if (isToonCrafter) {
+        const keyframes = (animation.keyframes as Keyframe[] | undefined) ?? [];
+        const usableKeyframes = keyframes
+          .filter((kf) => kf.image)
+          .sort((a, b) => a.frameIndex - b.frameIndex);
+        if (usableKeyframes.length < 2) {
+          throw new Error("ToonCrafter requires at least two keyframes with images.");
+        }
+        if (usableKeyframes.length > 10) {
+          selectedKeyframes = sampleEvenly(usableKeyframes, 10);
+          await appendGenerationNote(
+            `ToonCrafter supports up to 10 keyframes; sampled ${selectedKeyframes.length} of ${usableKeyframes.length}.`
+          );
+        } else {
+          selectedKeyframes = usableKeyframes;
+        }
+
+        keyframePaths = selectedKeyframes.map((keyframe) => {
+          const imageUrl = String(keyframe.image ?? "");
+          const localPath = storagePathFromUrl(imageUrl);
+          if (!localPath) {
+            throw new Error("Invalid keyframe image path.");
+          }
+          return localPath;
+        });
+
+        if (size === "native") {
+          let maxWidth = 0;
+          let maxHeight = 0;
+          for (const keyframePath of keyframePaths) {
+            const dims = await resolveImageDimensions(keyframePath);
+            if (dims) {
+              maxWidth = Math.max(maxWidth, dims.width);
+              maxHeight = Math.max(maxHeight, dims.height);
+            }
+          }
+          if (!maxWidth || !maxHeight) {
+            maxWidth = frameWidth;
+            maxHeight = frameHeight;
+          }
+          effectiveSize = `${maxWidth}x${maxHeight}`;
+          await appendGenerationNote(
+            `Using native keyframe size ${maxWidth}x${maxHeight}.`
+          );
+        }
+      }
+
+      const working = await ensureWorkingReference({
         character,
         referencePath,
         referenceImageId: String(primary?.id ?? "default"),
-        generationSize: size,
+        generationSize: effectiveSize,
       });
+      workingPath = working.workingPath;
+      workingSpec = working.workingSpec;
 
-      const prompt = buildSoraPrompt({
-        description: String(animation.description ?? ""),
-        style: String(animation.style ?? ""),
-        artStyle: String(character.style ?? "pixel-art"),
-        bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
-      });
+      const resolvedPromptProfile =
+        String(animation.promptProfile ?? "") === "concise" ||
+        String(animation.promptProfile ?? "") === "verbose"
+          ? (animation.promptProfile as "verbose" | "concise")
+          : modelConfig.promptProfile;
+      const promptOverride =
+        resolvedPromptProfile === "concise"
+          ? (animation.promptConcise as string | undefined)
+          : (animation.promptVerbose as string | undefined);
+      const prompt =
+        typeof promptOverride === "string" && promptOverride.trim()
+          ? promptOverride
+          : buildVideoPrompt({
+              description: String(animation.description ?? ""),
+              style: String(animation.style ?? ""),
+              artStyle: String(character.style ?? "pixel-art"),
+              bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+              promptProfile: resolvedPromptProfile,
+            });
 
-      const job = await createVideoJob({
-        prompt,
-        model,
-        seconds,
-        size,
-        inputReferencePath: workingPath,
-      });
-
-      await updateGenerationJob({
-        provider: "openai",
-        providerJobId: job.id,
-        status: job.status,
-        progress: typeof job.progress === "number" ? job.progress : 0,
-        expiresAt: job.expires_at ? new Date(job.expires_at * 1000).toISOString() : undefined,
-      });
-
-      const finalJob = await pollVideoJob({
-        videoId: job.id,
-        onUpdate: async (update) => {
-          const patch: Record<string, unknown> = {
-            status: update.status,
-          };
-          if (typeof update.progress === "number") {
-            patch.progress = update.progress;
-          }
-          if (update.expires_at) {
-            patch.expiresAt = new Date(update.expires_at * 1000).toISOString();
-          }
-          await updateGenerationJob(patch);
-        },
-      });
-
-      const expiresAt = finalJob.expires_at
-        ? new Date(finalJob.expires_at * 1000).toISOString()
-        : undefined;
+      let providerSpritesheetUrl: string | undefined;
+      let providerThumbUrl: string | undefined;
+      let expiresAt: string | undefined;
 
       const generatedDir = storagePath("animations", animationId, "generated");
       await ensureDir(generatedDir);
       const videoFilename = `video_${Date.now()}.mp4`;
       const videoPath = path.join(generatedDir, videoFilename);
-      const videoBuffer = await downloadVideoContent({ videoId: job.id });
-      await fs.writeFile(videoPath, videoBuffer);
 
-      let providerSpritesheetUrl: string | undefined;
-      let providerThumbUrl: string | undefined;
-
-      try {
-        const spriteBuffer = await downloadVideoContent({
-          videoId: job.id,
-          variant: "spritesheet",
+      if (useOpenAI) {
+        const job = await createVideoJob({
+          prompt,
+          model,
+          seconds,
+          size,
+          inputReferencePath: workingPath,
         });
-        const spriteName = `provider_spritesheet_${Date.now()}.png`;
-        const spritePath = path.join(generatedDir, spriteName);
-        await fs.writeFile(spritePath, spriteBuffer);
-        providerSpritesheetUrl = `/api/storage/animations/${animationId}/generated/${spriteName}`;
-      } catch {
-        // optional
-      }
 
-      try {
-        const thumbBuffer = await downloadVideoContent({
-          videoId: job.id,
-          variant: "thumbnail",
+        await updateGenerationJob({
+          provider: "openai",
+          providerJobId: job.id,
+          status: job.status,
+          progress: typeof job.progress === "number" ? job.progress : 0,
+          expiresAt: job.expires_at ? new Date(job.expires_at * 1000).toISOString() : undefined,
         });
-        const thumbName = `thumbnail_${Date.now()}.png`;
-        const thumbPath = path.join(generatedDir, thumbName);
-        await fs.writeFile(thumbPath, thumbBuffer);
-        providerThumbUrl = `/api/storage/animations/${animationId}/generated/${thumbName}`;
-      } catch {
-        // optional
+
+        const finalJob = await pollVideoJob({
+          videoId: job.id,
+          onUpdate: async (update) => {
+            const patch: Record<string, unknown> = {
+              status: update.status,
+            };
+            if (typeof update.progress === "number") {
+              patch.progress = update.progress;
+            }
+            if (update.expires_at) {
+              patch.expiresAt = new Date(update.expires_at * 1000).toISOString();
+            }
+            await updateGenerationJob(patch);
+          },
+        });
+
+        expiresAt = finalJob.expires_at
+          ? new Date(finalJob.expires_at * 1000).toISOString()
+          : undefined;
+
+        const videoBuffer = await downloadVideoContent({ videoId: job.id });
+        await fs.writeFile(videoPath, videoBuffer);
+
+        try {
+          const spriteBuffer = await downloadVideoContent({
+            videoId: job.id,
+            variant: "spritesheet",
+          });
+          const spriteName = `provider_spritesheet_${Date.now()}.png`;
+          const spritePath = path.join(generatedDir, spriteName);
+          await fs.writeFile(spritePath, spriteBuffer);
+          providerSpritesheetUrl = `/api/storage/animations/${animationId}/generated/${spriteName}`;
+        } catch {
+          // optional
+        }
+
+        try {
+          const thumbBuffer = await downloadVideoContent({
+            videoId: job.id,
+            variant: "thumbnail",
+          });
+          const thumbName = `thumbnail_${Date.now()}.png`;
+          const thumbPath = path.join(generatedDir, thumbName);
+          await fs.writeFile(thumbPath, thumbBuffer);
+          providerThumbUrl = `/api/storage/animations/${animationId}/generated/${thumbName}`;
+        } catch {
+          // optional
+        }
+      } else if (useReplicateVideo && replicateModel) {
+        if (isToonCrafter) {
+          if (selectedKeyframes.length < 2 || keyframePaths.length < 2) {
+            throw new Error("ToonCrafter requires at least two keyframes with images.");
+          }
+
+          const parsedSize = parseSize(effectiveSize);
+          const colorCorrection =
+            typeof animation.tooncrafterColorCorrection === "boolean"
+              ? animation.tooncrafterColorCorrection
+              : true;
+          const seedValue = Number(animation.tooncrafterSeed);
+
+          const input: Record<string, unknown> = {
+            prompt,
+            interpolate: animation.tooncrafterInterpolate === true,
+            color_correction: colorCorrection,
+            loop: animation.generationLoop === true,
+          };
+
+          if (
+            Number.isFinite(parsedSize.width) &&
+            Number.isFinite(parsedSize.height) &&
+            parsedSize.width > 0 &&
+            parsedSize.height > 0
+          ) {
+            input.max_width = parsedSize.width;
+            input.max_height = parsedSize.height;
+          }
+
+          if (Number.isFinite(seedValue)) {
+            input.seed = seedValue;
+          }
+
+          for (let index = 0; index < selectedKeyframes.length; index += 1) {
+            const buffer = await buildKeyframeCanvas({
+              sourcePath: keyframePaths[index],
+              spec: workingSpec,
+            });
+            input[`image_${index + 1}`] = bufferToDataUrl(buffer);
+          }
+
+          const prediction = await createPrediction({
+            model: replicateModel,
+            input,
+          });
+
+          await updateGenerationJob({
+            provider: "replicate",
+            providerJobId: prediction.id,
+            status: prediction.status,
+          });
+
+          const finalPrediction = await waitForPrediction(prediction.id);
+          await updateGenerationJob({
+            status: finalPrediction.status,
+            progress: 100,
+          });
+
+          const output = finalPrediction.output as
+            | string
+            | string[]
+            | { url?: string }
+            | null
+            | undefined;
+          const outputUrl =
+            typeof output === "string"
+              ? output
+              : Array.isArray(output)
+              ? output[0]
+              : output?.url;
+          if (!outputUrl) {
+            throw new Error("No output returned from Replicate.");
+          }
+
+          const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
+          if (!outputResponse.ok) {
+            throw new Error("Failed to download generated video.");
+          }
+          const outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
+          await fs.writeFile(videoPath, outputBuffer);
+        } else {
+          const aspectRatio = getVideoAspectRatio(size);
+          const resolution = getVideoResolution(size);
+          const supportsStartEnd = Boolean(modelConfig.supportsStartEnd);
+          const supportsLoop = Boolean(modelConfig.supportsLoop);
+          const startImageKey = modelConfig.startImageKey;
+          const endImageKey = modelConfig.endImageKey;
+          const resolutionKey = modelConfig.replicateResolutionKey;
+          const supportsAudio = Boolean(modelConfig.replicateSupportsAudio);
+          const loopRequested = animation.generationLoop === true;
+
+          const customStartPath = await resolveLocalImagePath(
+            typeof animation.generationStartImageUrl === "string"
+              ? animation.generationStartImageUrl
+              : undefined
+          );
+          const customEndPath = await resolveLocalImagePath(
+            typeof animation.generationEndImageUrl === "string"
+              ? animation.generationEndImageUrl
+              : undefined
+          );
+
+          let startImagePath = customStartPath ?? workingPath;
+          if (customStartPath) {
+            startImagePath = await normalizeGenerationFrame({
+              animationId,
+              kind: "start",
+              sourcePath: customStartPath,
+              generationSize: size,
+              bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+            });
+          }
+
+          let endImagePath: string | null = null;
+          if (supportsStartEnd && (!loopRequested || !supportsLoop)) {
+            if (loopRequested && !supportsLoop) {
+              endImagePath = startImagePath;
+            } else if (customEndPath) {
+              endImagePath = await normalizeGenerationFrame({
+                animationId,
+                kind: "end",
+                sourcePath: customEndPath,
+                generationSize: size,
+                bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+              });
+            }
+          }
+          const input: Record<string, unknown> = {
+            prompt,
+            duration: seconds,
+            aspect_ratio: aspectRatio,
+          };
+
+          if (resolutionKey === "quality") {
+            input.quality = resolution;
+          } else if (resolutionKey === "resolution") {
+            input.resolution = resolution;
+          }
+          if (supportsAudio) {
+            input.generate_audio = false;
+          }
+          if (supportsLoop && loopRequested) {
+            input.loop = true;
+          }
+          if (startImageKey && startImagePath) {
+            input[startImageKey] = await fileToDataUrl(startImagePath);
+          }
+          const shouldSendEndImage =
+            supportsStartEnd && endImageKey && endImagePath;
+          if (shouldSendEndImage) {
+            input[endImageKey] = await fileToDataUrl(endImagePath);
+          }
+
+          const prediction = await createPrediction({
+            model: replicateModel,
+            input,
+          });
+
+          await updateGenerationJob({
+            provider: "replicate",
+            providerJobId: prediction.id,
+            status: prediction.status,
+          });
+
+          const finalPrediction = await waitForPrediction(prediction.id);
+          await updateGenerationJob({
+            status: finalPrediction.status,
+            progress: 100,
+          });
+
+          const output = finalPrediction.output as
+            | string
+            | string[]
+            | { url?: string }
+            | null
+            | undefined;
+          const outputUrl =
+            typeof output === "string"
+              ? output
+              : Array.isArray(output)
+              ? output[0]
+              : output?.url;
+          if (!outputUrl) {
+            throw new Error("No output returned from Replicate.");
+          }
+
+          const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
+          if (!outputResponse.ok) {
+            throw new Error("Failed to download generated video.");
+          }
+          const outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
+          await fs.writeFile(videoPath, outputBuffer);
+        }
       }
 
       const rawFramesDir = path.join(generatedDir, "frames_raw");
@@ -516,7 +896,7 @@ async function runGeneration(animationId: string) {
           url: `/api/storage/animations/${animationId}/generated/frames/${outputName}`,
           isKeyframe: false,
           generatedAt: new Date().toISOString(),
-          source: "sora",
+          source: model,
         });
       }
 
@@ -718,12 +1098,24 @@ export async function POST(request: Request) {
     return Response.json({ animation, message: "Generation already in progress." });
   }
 
-  const provider = String(animation.generationProvider ?? "openai");
+  const model = String(animation.generationModel ?? "sora-2");
+  const requestedProvider = String(animation.generationProvider ?? "");
+  const modelProvider = getVideoProviderForModel(model);
+  const provider = requestedProvider === "replicate" ? "replicate" : modelProvider;
   if (provider === "openai" && !process.env.OPENAI_API_KEY?.trim()) {
     return Response.json(
       {
         error:
           "Missing OPENAI_API_KEY. Add it to .env.local (or your env) and restart the dev server.",
+      },
+      { status: 500 }
+    );
+  }
+  if (provider === "replicate" && getReplicateModelForVideo(model) && !process.env.REPLICATE_API_TOKEN?.trim()) {
+    return Response.json(
+      {
+        error:
+          "Missing REPLICATE_API_TOKEN. Add it to .env.local (or your env) and restart the dev server.",
       },
       { status: 500 }
     );

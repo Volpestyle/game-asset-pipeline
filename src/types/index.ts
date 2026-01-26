@@ -91,8 +91,17 @@ export interface Animation {
   frameHeight?: number;
   generationProvider?: "openai" | "replicate";
   generationModel?: string;
+  promptProfile?: PromptProfile;
+  promptConcise?: string;
+  promptVerbose?: string;
   generationSeconds?: number;
   generationSize?: string;
+  generationLoop?: boolean;
+  generationStartImageUrl?: string | null;
+  generationEndImageUrl?: string | null;
+  tooncrafterInterpolate?: boolean;
+  tooncrafterColorCorrection?: boolean;
+  tooncrafterSeed?: number | null;
   extractFps?: number;
   loopMode?: "loop" | "pingpong";
   sheetColumns?: number;
@@ -129,6 +138,7 @@ export interface Animation {
 export type AnimationStatus = 'draft' | 'generating' | 'complete' | 'failed';
 
 export type AnimationVersionSource = "manual" | "generation";
+export type PromptProfile = 'verbose' | 'concise';
 
 export interface AnimationVersion {
   id: string;
@@ -142,7 +152,7 @@ export interface Keyframe {
   frameIndex: number;
   image?: string;
   prompt?: string;
-  model?: 'rd-fast' | 'rd-plus';
+  model?: 'rd-fast' | 'rd-plus' | 'nano-banana-pro';
   strength?: number;
   // Advanced rd-fast/rd-plus options
   inputPalette?: string;
