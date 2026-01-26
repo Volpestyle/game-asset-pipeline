@@ -5,6 +5,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout";
+import { CloudUpload } from "iconoir-react";
+import { cn } from "@/lib/utils";
+import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
 import {
   TimelineEditor,
   FramePreview,
@@ -12,14 +15,21 @@ import {
   AdvancedKeyframePanel,
   ExportPanel,
   ModelConstraints,
-  VIDEO_SECONDS_OPTIONS,
   EXTRACT_FPS_OPTIONS,
   coerceVideoSizeForModel,
+  coerceVideoSecondsForModel,
   getExpectedFrameCount,
   isSizeValidForModel,
+  getVideoModelOptions,
+  getVideoSecondsOptions,
+  getVideoProviderForModel,
+  getVideoModelSupportsStartEnd,
+  getVideoModelSupportsLoop,
+  getVideoModelPromptProfile,
+  getVideoModelLabel,
 } from "@/components/animation";
 import type { KeyframeFormData } from "@/components/animation";
-import type { Animation, AnimationStyle, Character } from "@/types";
+import type { Animation, AnimationStyle, Character, PromptProfile } from "@/types";
 
 const STYLE_OPTIONS: { value: AnimationStyle; label: string; code: string }[] = [
   { value: "idle", label: "Idle", code: "IDL" },
@@ -28,6 +38,11 @@ const STYLE_OPTIONS: { value: AnimationStyle; label: string; code: string }[] = 
   { value: "attack", label: "Attack", code: "ATK" },
   { value: "jump", label: "Jump", code: "JMP" },
   { value: "custom", label: "Custom", code: "CST" },
+];
+
+const PROMPT_PROFILE_OPTIONS: { value: PromptProfile; label: string }[] = [
+  { value: "concise", label: "Concise" },
+  { value: "verbose", label: "Verbose" },
 ];
 
 export default function AnimationDetailPage() {
@@ -48,10 +63,31 @@ export default function AnimationDetailPage() {
   const [isKeyframeWorking, setIsKeyframeWorking] = useState(false);
   const [activeTab, setActiveTab] = useState<"timeline" | "settings">("timeline");
   const [isInterpolating, setIsInterpolating] = useState(false);
-  const [interpolationModel, setInterpolationModel] = useState<"rd-fast" | "rd-plus">("rd-plus");
+  const [interpolationModel, setInterpolationModel] = useState<
+    "rd-fast" | "rd-plus"
+  >("rd-plus");
   const [isRefSaving, setIsRefSaving] = useState(false);
   const [isVersionWorking, setIsVersionWorking] = useState(false);
   const [versionName, setVersionName] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importSkipRoi, setImportSkipRoi] = useState(true);
+  const modelOptions = useMemo(() => getVideoModelOptions(), []);
+  const [importDragOver, setImportDragOver] = useState(false);
+  const [isGenerationFrameSaving, setIsGenerationFrameSaving] = useState(false);
+  const [importVideoMeta, setImportVideoMeta] = useState<{
+    duration: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [spritesheetExpanded, setSpritesheetExpanded] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const stored = localStorage.getItem("spritesheet-panel-expanded");
+    return stored === null ? true : stored === "true";
+  });
+  const [isPromptEditing, setIsPromptEditing] = useState(false);
+  const [draftPromptConcise, setDraftPromptConcise] = useState("");
+  const [draftPromptVerbose, setDraftPromptVerbose] = useState("");
 
   const updateAnimationState = useCallback((newAnim: Animation | null) => {
     setAnimation(newAnim);
@@ -85,6 +121,17 @@ export default function AnimationDetailPage() {
             generationNote: `Adjusted video size to ${coercedSize} for ${model}.`,
           };
         }
+      }
+      const currentSeconds = Number(nextAnimation.generationSeconds ?? NaN);
+      const coercedSeconds = coerceVideoSecondsForModel(currentSeconds, model);
+      if (coercedSeconds !== currentSeconds) {
+        const fpsValue = Number(nextAnimation.extractFps ?? nextAnimation.fps ?? 6);
+        const frameCount = getExpectedFrameCount(coercedSeconds, fpsValue);
+        nextAnimation = {
+          ...nextAnimation,
+          generationSeconds: coercedSeconds,
+          frameCount,
+        };
       }
       setAnimation(nextAnimation);
       // setSavedAnimation should only be called if we trust the server state as "clean"
@@ -138,6 +185,34 @@ export default function AnimationDetailPage() {
       return 0;
     });
   }, [animation]);
+
+  useEffect(() => {
+    if (isPromptEditing) return;
+    const description = String(animation?.description ?? "");
+    const style = String(animation?.style ?? "");
+    const artStyle = character?.style ?? "pixel-art";
+    const bgKeyColor = character?.workingSpec?.bgKeyColor;
+    const autoConcise = buildVideoPrompt({
+      description,
+      style,
+      artStyle,
+      bgKeyColor,
+      promptProfile: "concise",
+    });
+    const autoVerbose = buildVideoPrompt({
+      description,
+      style,
+      artStyle,
+      bgKeyColor,
+      promptProfile: "verbose",
+    });
+    const effectiveConcise =
+      animation?.promptConcise?.trim() ? animation.promptConcise : autoConcise;
+    const effectiveVerbose =
+      animation?.promptVerbose?.trim() ? animation.promptVerbose : autoVerbose;
+    setDraftPromptConcise(effectiveConcise);
+    setDraftPromptVerbose(effectiveVerbose);
+  }, [animation, character, isPromptEditing]);
 
   const handleSave = async () => {
     if (!animation) return;
@@ -339,7 +414,11 @@ export default function AnimationDetailPage() {
     [clearKeyframe]
   );
 
-  const handleExport = async () => {
+  const handleExport = async (options: {
+    normalize: boolean;
+    removeBackground: boolean;
+    alphaThreshold: number;
+  }) => {
     if (!animationId) return;
     setIsExporting(true);
     setMessage(null);
@@ -348,13 +427,23 @@ export default function AnimationDetailPage() {
       const response = await fetch("/api/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ animationId }),
+        body: JSON.stringify({
+          animationId,
+          normalize: options.normalize,
+          removeBackground: options.removeBackground,
+          alphaThreshold: options.alphaThreshold,
+        }),
       });
       if (!response.ok) {
         const data = await response.json();
         throw new Error(data?.error || "Export failed.");
       }
-      setMessage("Export ready.");
+      const notes = [
+        options.normalize ? "normalized" : null,
+        options.removeBackground ? "background cleaned" : null,
+        options.alphaThreshold > 0 ? `alpha ${options.alphaThreshold}` : null,
+      ].filter(Boolean);
+      setMessage(notes.length ? `Export ready (${notes.join(", ")}).` : "Export ready.");
       await loadAnimation();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Export failed.");
@@ -470,6 +559,155 @@ export default function AnimationDetailPage() {
       setIsInterpolating(false);
     }
   };
+
+  const applyAnimationPatch = useCallback(
+    async (patch: Partial<Animation>, options?: { success?: string }) => {
+      if (!animationId) return;
+      setIsGenerationFrameSaving(true);
+      setMessage(null);
+      setError(null);
+      try {
+        const response = await fetch(`/api/animations/${animationId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data?.error || "Failed to update animation.");
+        }
+        const data = await response.json();
+        updateAnimationState(data.animation);
+        if (options?.success) {
+          setMessage(options.success);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to update animation.");
+      } finally {
+        setIsGenerationFrameSaving(false);
+      }
+    },
+    [animationId, updateAnimationState]
+  );
+
+  const handleGenerationFrameUpload = useCallback(
+    async (kind: "start" | "end", file: File | null) => {
+      if (!animationId || !file) return;
+      setIsGenerationFrameSaving(true);
+      setMessage(null);
+      setError(null);
+      try {
+        const formData = new FormData();
+        formData.append("kind", kind);
+        formData.append("image", file, file.name);
+        const response = await fetch(
+          `/api/animations/${animationId}/generation-frames`,
+          { method: "POST", body: formData }
+        );
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data?.error || "Failed to upload frame.");
+        }
+        const data = await response.json();
+        updateAnimationState(data.animation);
+        setMessage(`${kind === "start" ? "Start" : "End"} frame updated.`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to upload frame.");
+      } finally {
+        setIsGenerationFrameSaving(false);
+      }
+    },
+    [animationId, updateAnimationState]
+  );
+
+  const handleGenerationLoopToggle = useCallback(
+    async (nextValue: boolean) => {
+      const patch: Partial<Animation> = { generationLoop: nextValue };
+      if (nextValue) {
+        patch.generationEndImageUrl = null;
+      }
+      await applyAnimationPatch(patch, {
+        success: nextValue ? "Loop enabled." : "Loop disabled.",
+      });
+    },
+    [applyAnimationPatch]
+  );
+
+  const handleImportVideo = async () => {
+    if (!animationId || !importFile) return;
+    const ok = window.confirm(
+      "Import this video? This will replace generated frames, spritesheet, and exports."
+    );
+    if (!ok) return;
+    setIsImporting(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append("video", importFile, importFile.name);
+      if (importSkipRoi) {
+        formData.append("skipRoi", "true");
+      }
+
+      const response = await fetch(`/api/animations/${animationId}/import-video`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data?.error || "Import failed.");
+      }
+      const data = await response.json();
+      updateAnimationState(data.animation);
+      setImportFile(null);
+      setImportVideoMeta(null);
+      setMessage("Video imported.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed.");
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleImportFileSelect = useCallback((file: File | null) => {
+    setImportFile(file);
+    setImportVideoMeta(null);
+    if (!file) return;
+
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      setImportVideoMeta({
+        duration: video.duration,
+        width: video.videoWidth,
+        height: video.videoHeight,
+      });
+      URL.revokeObjectURL(video.src);
+    };
+    video.src = URL.createObjectURL(file);
+  }, []);
+
+  const handleImportDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setImportDragOver(false);
+      const file = e.dataTransfer.files[0];
+      if (file?.type === "video/mp4") {
+        handleImportFileSelect(file);
+      }
+    },
+    [handleImportFileSelect]
+  );
+
+  const handleImportDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setImportDragOver(true);
+  }, []);
+
+  const handleImportDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setImportDragOver(false);
+  }, []);
 
   const formatVersionTimestamp = (value?: string) => {
     if (!value) return "";
@@ -628,6 +866,58 @@ export default function AnimationDetailPage() {
     String(animation.generationSize ?? "1024x1792"),
     String(animation.generationModel ?? "sora-2")
   );
+  const durationOptions = getVideoSecondsOptions(
+    String(animation.generationModel ?? "sora-2")
+  );
+  const supportsStartEnd = getVideoModelSupportsStartEnd(
+    String(animation.generationModel ?? "sora-2")
+  );
+  const supportsLoop = getVideoModelSupportsLoop(
+    String(animation.generationModel ?? "sora-2")
+  );
+  const isToonCrafter =
+    String(animation.generationModel ?? "sora-2") === "tooncrafter";
+  const generationLoop = Boolean(animation.generationLoop);
+  const tooncrafterInterpolate = animation.tooncrafterInterpolate === true;
+  const tooncrafterColorCorrection =
+    typeof animation.tooncrafterColorCorrection === "boolean"
+      ? animation.tooncrafterColorCorrection
+      : true;
+  const tooncrafterSeed = animation.tooncrafterSeed ?? "";
+  const promptProfile =
+    animation.promptProfile ??
+    getVideoModelPromptProfile(String(animation.generationModel ?? "sora-2"));
+  const autoPromptConcise = buildVideoPrompt({
+    description: String(animation.description ?? ""),
+    style: String(animation.style ?? ""),
+    artStyle: character?.style ?? "pixel-art",
+    bgKeyColor: character?.workingSpec?.bgKeyColor,
+    promptProfile: "concise",
+  });
+  const autoPromptVerbose = buildVideoPrompt({
+    description: String(animation.description ?? ""),
+    style: String(animation.style ?? ""),
+    artStyle: character?.style ?? "pixel-art",
+    bgKeyColor: character?.workingSpec?.bgKeyColor,
+    promptProfile: "verbose",
+  });
+  const effectivePromptConcise =
+    animation.promptConcise?.trim() ? animation.promptConcise : autoPromptConcise;
+  const effectivePromptVerbose =
+    animation.promptVerbose?.trim() ? animation.promptVerbose : autoPromptVerbose;
+  const promptPreview = isPromptEditing
+    ? promptProfile === "concise"
+      ? draftPromptConcise
+      : draftPromptVerbose
+    : promptProfile === "concise"
+    ? effectivePromptConcise
+    : effectivePromptVerbose;
+
+  const activeReference =
+    character?.referenceImages?.find((img) => img.id === animation.referenceImageId) ??
+    character?.referenceImages?.find((img) => img.isPrimary) ??
+    character?.referenceImages?.[0] ??
+    null;
   const generationInProgress = animation.status === "generating";
   const progressValue = animation.generationJob?.progress;
   const progressPercent =
@@ -762,6 +1052,47 @@ export default function AnimationDetailPage() {
             </div>
           </section>
 
+          {/* Generation Details Panel - shown when generation has been attempted */}
+          {animation.generationModel && (animation.status === "generating" || animation.status === "complete" || animation.status === "failed") && (
+            <section className="tech-border bg-card">
+              <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+                <span className="text-xs text-muted-foreground tracking-wider">GENERATION DETAILS</span>
+                <span className="text-[10px] text-muted-foreground">
+                  {animation.generationProvider === "openai" ? "OpenAI" : "Replicate"}
+                </span>
+              </div>
+              <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+                <div>
+                  <span className="text-muted-foreground block mb-1">Model</span>
+                  <span className="font-medium">{getVideoModelLabel(animation.generationModel)}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block mb-1">Duration</span>
+                  <span className="font-medium">{animation.generationSeconds ?? "—"}s</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block mb-1">Prompt Profile</span>
+                  <span className="font-medium capitalize">{animation.promptProfile ?? "verbose"}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block mb-1">Loop Mode</span>
+                  <span className="font-medium capitalize">{animation.loopMode ?? "loop"}</span>
+                </div>
+              </div>
+              <div className="px-4 pb-4">
+                <span className="text-muted-foreground block mb-2 text-xs">Prompt</span>
+                <div className="tech-border bg-background p-3 text-xs text-muted-foreground leading-relaxed max-h-24 overflow-y-auto">
+                  {character ? buildVideoPrompt({
+                    description: animation.description ?? "",
+                    style: animation.style,
+                    artStyle: character.style ?? "pixel-art",
+                    promptProfile: animation.promptProfile ?? "verbose",
+                  }) : animation.description ?? "No prompt available"}
+                </div>
+              </div>
+            </section>
+          )}
+
           {/* Tab navigation */}
           <div className="flex gap-2 border-b border-border">
             <button
@@ -820,16 +1151,32 @@ export default function AnimationDetailPage() {
                   />
 
                   {animation.generatedSpritesheet && (
-                    <div className="tech-border bg-card p-4 space-y-3">
-                      <p className="text-xs text-muted-foreground tracking-widest">Generated Spritesheet</p>
-                      <div className="overflow-auto border border-border">
-                        <img
-                          src={animation.generatedSpritesheet}
-                          alt="Generated spritesheet"
-                          className="max-w-full"
-                          style={{ imageRendering: "pixelated" }}
-                        />
-                      </div>
+                    <div className="tech-border bg-card">
+                      <button
+                        onClick={() => {
+                          const next = !spritesheetExpanded;
+                          setSpritesheetExpanded(next);
+                          localStorage.setItem("spritesheet-panel-expanded", String(next));
+                        }}
+                        className="w-full px-4 py-3 border-b border-border flex items-center justify-between hover:bg-muted/30 transition-colors"
+                      >
+                        <span className="text-xs text-muted-foreground tracking-wider">GENERATED SPRITESHEET</span>
+                        <span className="text-xs text-muted-foreground">
+                          {spritesheetExpanded ? "−" : "+"}
+                        </span>
+                      </button>
+                      {spritesheetExpanded && (
+                        <div className="p-4">
+                          <div className="overflow-auto border border-border">
+                            <img
+                              src={animation.generatedSpritesheet}
+                              alt="Generated spritesheet"
+                              className="max-w-full"
+                              style={{ imageRendering: "pixelated" }}
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -850,6 +1197,123 @@ export default function AnimationDetailPage() {
                     }}
                     isWorking={isKeyframeWorking}
                   />
+
+                  {/* Import Video Panel */}
+                  <div className="tech-border bg-card">
+                    <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground tracking-wider">IMPORT VIDEO</span>
+                      <div className="flex gap-2 text-[10px]">
+                        <a
+                          href="https://sora.com"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary hover:underline"
+                        >
+                          sora
+                        </a>
+                        <span className="text-muted-foreground">·</span>
+                        <a
+                          href="https://aistudio.google.com"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary hover:underline"
+                        >
+                          gemini
+                        </a>
+                      </div>
+                    </div>
+                    <div className="p-4 space-y-3">
+                      {/* Drop zone */}
+                      <div
+                        className={cn(
+                          "drop-zone p-4 cursor-pointer transition-all duration-150",
+                          importDragOver && "drag-over",
+                          isImporting && "opacity-50 pointer-events-none"
+                        )}
+                        onDrop={handleImportDrop}
+                        onDragOver={handleImportDragOver}
+                        onDragLeave={handleImportDragLeave}
+                        onClick={() => document.getElementById("import-video-input")?.click()}
+                      >
+                        <input
+                          id="import-video-input"
+                          type="file"
+                          accept="video/mp4"
+                          className="hidden"
+                          onChange={(e) => handleImportFileSelect(e.target.files?.[0] ?? null)}
+                          disabled={isImporting}
+                        />
+                        <div className="text-center space-y-2">
+                          <div className="w-10 h-10 mx-auto border border-border flex items-center justify-center">
+                            <CloudUpload className="w-5 h-5 text-primary" strokeWidth={1.5} />
+                          </div>
+                          <div className="space-y-0.5">
+                            <p className="text-xs text-foreground">Drop MP4 here</p>
+                            <p className="text-[10px] text-muted-foreground">or click to browse</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Video info after selection */}
+                      {importFile && (
+                        <div className="border border-border p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-medium truncate flex-1 mr-2">{importFile.name}</p>
+                            <button
+                              onClick={() => {
+                                setImportFile(null);
+                                setImportVideoMeta(null);
+                              }}
+                              className="text-[10px] text-muted-foreground hover:text-destructive"
+                            >
+                              CLEAR
+                            </button>
+                          </div>
+                          {importVideoMeta && (
+                            <div className="flex gap-3 text-[10px] text-muted-foreground">
+                              <span>{importVideoMeta.duration.toFixed(1)}s</span>
+                              <span>{importVideoMeta.width}×{importVideoMeta.height}</span>
+                              <span>~{Math.ceil(importVideoMeta.duration * Number(animation.extractFps ?? animation.fps ?? 6))} frames</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Current settings display */}
+                      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+                        <span>FPS: {animation.extractFps ?? animation.fps ?? 6}</span>
+                        <span>Loop: {animation.loopMode ?? "pingpong"}</span>
+                        <span>Size: {displayFrameWidth}×{displayFrameHeight}</span>
+                      </div>
+
+                      {/* Skip ROI option */}
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={importSkipRoi}
+                          onChange={(e) => setImportSkipRoi(e.target.checked)}
+                          className="w-3.5 h-3.5 accent-primary"
+                        />
+                        <span className="text-[10px] text-muted-foreground">
+                          Use full frame (skip ROI crop)
+                        </span>
+                      </label>
+
+                      {/* Import button */}
+                      <Button
+                        onClick={handleImportVideo}
+                        disabled={!importFile || isImporting}
+                        className="w-full h-9 bg-primary hover:bg-primary/80 text-primary-foreground text-[10px] tracking-wider"
+                      >
+                        {isImporting ? "IMPORTING..." : "IMPORT MP4"}
+                      </Button>
+
+                      <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
+                        Generate with Sora or Gemini, download, and import here. Aspect ratio is
+                        preserved; video is centered with transparent padding if needed.
+                      </p>
+                    </div>
+                  </div>
 
                   {/* Version Manager */}
                   <div className="tech-border bg-card">
@@ -944,41 +1408,6 @@ export default function AnimationDetailPage() {
                     </div>
                   </div>
 
-                  {/* Interpolation Panel */}
-                  <div className="tech-border bg-card">
-                    <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground tracking-wider">INTERPOLATION</span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {(animation.keyframes?.length ?? 0)} KEYFRAMES
-                      </span>
-                    </div>
-                    <div className="p-4 space-y-3">
-                      <div className="space-y-2">
-                        <label className="text-[10px] text-muted-foreground uppercase tracking-widest">
-                          Model
-                        </label>
-                        <select
-                          value={interpolationModel}
-                          onChange={(e) => setInterpolationModel(e.target.value as "rd-fast" | "rd-plus")}
-                          className="terminal-input w-full h-9 px-3 text-sm bg-card"
-                        >
-                          <option value="rd-plus">rd-plus (higher quality)</option>
-                          <option value="rd-fast">rd-fast (faster)</option>
-                        </select>
-                      </div>
-                      <Button
-                        onClick={handleInterpolate}
-                        disabled={isInterpolating || (animation.keyframes?.length ?? 0) < 2}
-                        className="w-full h-9 bg-primary hover:bg-primary/80 text-primary-foreground text-[10px] tracking-wider"
-                      >
-                        {isInterpolating ? "INTERPOLATING..." : "INTERPOLATE KEYFRAME GAPS"}
-                      </Button>
-                      <p className="text-[10px] text-muted-foreground leading-relaxed">
-                        Fills frames between adjacent keyframes using img2img. Existing in-between frames will be replaced.
-                      </p>
-                    </div>
-                  </div>
-
                   {/* Export Panel */}
                   <ExportPanel animation={animation} onExport={handleExport} isExporting={isExporting} />
                 </div>
@@ -1038,6 +1467,95 @@ export default function AnimationDetailPage() {
                 </div>
               </div>
               <div className="tech-border bg-card p-4 space-y-2">
+                <p className="text-xs text-muted-foreground tracking-widest">Prompt Preview</p>
+                <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                  <span className="tracking-widest">Profile</span>
+                  <span className="text-primary">{promptProfile}</span>
+                </div>
+                <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words">
+                  {promptPreview}
+                </div>
+              </div>
+              <div className="tech-border bg-card p-4 space-y-2">
+                <p className="text-xs text-muted-foreground tracking-widest">Prompt Overrides</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftPromptConcise(effectivePromptConcise);
+                      setDraftPromptVerbose(effectivePromptVerbose);
+                      setIsPromptEditing(true);
+                    }}
+                    disabled={isPromptEditing}
+                    className="px-3 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary disabled:opacity-50"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void applyAnimationPatch(
+                        {
+                          promptConcise: draftPromptConcise,
+                          promptVerbose: draftPromptVerbose,
+                        },
+                        { success: "Prompts saved." }
+                      );
+                      setIsPromptEditing(false);
+                    }}
+                    disabled={!isPromptEditing}
+                    className="px-3 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void applyAnimationPatch(
+                        { promptConcise: "", promptVerbose: "" },
+                        { success: "Prompts reset." }
+                      );
+                      setDraftPromptConcise(autoPromptConcise);
+                      setDraftPromptVerbose(autoPromptVerbose);
+                      setIsPromptEditing(false);
+                    }}
+                    className="px-3 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary"
+                  >
+                    Reset
+                  </button>
+                </div>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <p className="text-[10px] text-muted-foreground tracking-widest">Concise</p>
+                    <textarea
+                      value={isPromptEditing ? draftPromptConcise : effectivePromptConcise}
+                      onChange={(event) => setDraftPromptConcise(event.target.value)}
+                      rows={4}
+                      placeholder={autoPromptConcise}
+                      disabled={!isPromptEditing}
+                      className="terminal-input w-full p-3 text-xs bg-card resize-none"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Leave blank to auto-generate from description + preset.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <p className="text-[10px] text-muted-foreground tracking-widest">Verbose</p>
+                    <textarea
+                      value={isPromptEditing ? draftPromptVerbose : effectivePromptVerbose}
+                      onChange={(event) => setDraftPromptVerbose(event.target.value)}
+                      rows={4}
+                      placeholder={autoPromptVerbose}
+                      disabled={!isPromptEditing}
+                      className="terminal-input w-full p-3 text-xs bg-card resize-none"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Leave blank to auto-generate with full constraints.
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="tech-border bg-card p-4 space-y-2">
                 <p className="text-xs text-muted-foreground tracking-widest">Video Model</p>
                 <select
                   value={animation.generationModel ?? "sora-2"}
@@ -1047,23 +1565,65 @@ export default function AnimationDetailPage() {
                     const nextSize = isSizeValidForModel(currentSize, nextModel)
                       ? currentSize
                       : coerceVideoSizeForModel(currentSize, nextModel);
+                    const currentSeconds = Number(animation.generationSeconds ?? 4);
+                    const nextSeconds = coerceVideoSecondsForModel(currentSeconds, nextModel);
+                    const fpsValue = Number(animation.extractFps ?? animation.fps ?? 6);
+                    const frameCount = getExpectedFrameCount(nextSeconds, fpsValue);
+                    const nextPromptProfile =
+                      animation.promptProfile ?? getVideoModelPromptProfile(nextModel);
                     setAnimation({
                       ...animation,
+                      generationProvider: getVideoProviderForModel(nextModel),
                       generationModel: nextModel,
                       generationSize: nextSize,
+                      generationSeconds: nextSeconds,
+                      promptProfile: nextPromptProfile,
+                      frameCount,
                     });
                   }}
                   className="terminal-input w-full h-9 px-3 text-sm bg-card"
                 >
-                  <option value="sora-2">sora-2 (draft)</option>
-                  <option value="sora-2-pro">sora-2-pro (final)</option>
+                  {modelOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
+                {isToonCrafter && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Uses 2-10 keyframes to generate a full video, then extracts sprite frames.
+                    If you provide more than 10, we sample evenly. "Native" size uses your
+                    keyframe dimensions.
+                  </p>
+                )}
+              </div>
+
+              <div className="tech-border bg-card p-4 space-y-2">
+                <p className="text-xs text-muted-foreground tracking-widest">Prompt Profile</p>
+                <div className="flex flex-wrap gap-2">
+                  {PROMPT_PROFILE_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      onClick={() => setAnimation({ ...animation, promptProfile: option.value })}
+                      className={`px-3 py-1 text-xs border ${
+                        promptProfile === option.value
+                          ? "border-primary text-primary"
+                          : "border-border text-muted-foreground hover:border-primary/50"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Concise keeps prompts short. Verbose adds stricter constraints.
+                </p>
               </div>
 
               <div className="tech-border bg-card p-4 space-y-2">
                 <p className="text-xs text-muted-foreground tracking-widest">Clip Duration</p>
                 <div className="flex flex-wrap gap-2">
-                  {VIDEO_SECONDS_OPTIONS.map((value) => (
+                  {durationOptions.map((value) => (
                     <button
                       key={value}
                       onClick={() => {
@@ -1086,6 +1646,258 @@ export default function AnimationDetailPage() {
                   ))}
                 </div>
               </div>
+
+              {isToonCrafter && (
+                <div className="tech-border bg-card p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground tracking-widest">
+                      ToonCrafter Options
+                    </p>
+                    <span className="text-[10px] text-primary">Keyframes</span>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={generationLoop}
+                      onChange={(e) =>
+                        setAnimation({ ...animation, generationLoop: e.target.checked })
+                      }
+                      className="form-checkbox"
+                      disabled={isGenerationFrameSaving}
+                    />
+                    Loop output
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={tooncrafterInterpolate}
+                      onChange={(e) =>
+                        setAnimation({
+                          ...animation,
+                          tooncrafterInterpolate: e.target.checked,
+                        })
+                      }
+                      className="form-checkbox"
+                      disabled={isGenerationFrameSaving}
+                    />
+                    Interpolate (2x)
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={tooncrafterColorCorrection}
+                      onChange={(e) =>
+                        setAnimation({
+                          ...animation,
+                          tooncrafterColorCorrection: e.target.checked,
+                        })
+                      }
+                      className="form-checkbox"
+                      disabled={isGenerationFrameSaving}
+                    />
+                    Color correction
+                  </label>
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-muted-foreground tracking-widest">Seed</p>
+                    <input
+                      type="number"
+                      value={tooncrafterSeed}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const nextSeed =
+                          raw.trim() === "" ? null : Number(raw);
+                        setAnimation({
+                          ...animation,
+                          tooncrafterSeed:
+                            typeof nextSeed === "number" &&
+                            Number.isFinite(nextSeed)
+                              ? nextSeed
+                              : null,
+                        });
+                      }}
+                      placeholder="Random"
+                      className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                      disabled={isGenerationFrameSaving}
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Leave blank for random.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {!isToonCrafter && (
+                <div className="tech-border bg-card p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground tracking-widest">
+                    Start / End Frames
+                  </p>
+                  <span
+                    className={`text-[10px] ${
+                      supportsStartEnd || supportsLoop
+                        ? "text-success"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {supportsStartEnd || supportsLoop ? "Supported" : "Not supported"}
+                  </span>
+                </div>
+                {!supportsStartEnd && !supportsLoop ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    This model does not support explicit start/end frame controls.
+                  </p>
+                ) : (
+                  <>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={generationLoop}
+                        onChange={(e) => void handleGenerationLoopToggle(e.target.checked)}
+                        className="form-checkbox"
+                        disabled={isGenerationFrameSaving}
+                      />
+                      Match first/last frame (loop)
+                    </label>
+                    {!supportsLoop && generationLoop && (
+                      <p className="text-[10px] text-muted-foreground">
+                        This model doesn’t support a loop flag; end frame will reuse the start frame.
+                      </p>
+                    )}
+
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <p className="text-[10px] text-muted-foreground tracking-widest">
+                          Start Frame
+                        </p>
+                        {animation.generationStartImageUrl ? (
+                          <img
+                            src={animation.generationStartImageUrl}
+                            alt="Start frame"
+                            className="w-full h-24 object-contain border border-border bg-muted/20"
+                          />
+                        ) : (
+                          <p className="text-[10px] text-muted-foreground">
+                            Default: character reference
+                          </p>
+                        )}
+                        <div className="flex items-center gap-2">
+                          {activeReference && (
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary"
+                              disabled={isGenerationFrameSaving}
+                              onClick={() =>
+                                void applyAnimationPatch(
+                                  { generationStartImageUrl: activeReference.url },
+                                  { success: "Start frame set." }
+                                )
+                              }
+                            >
+                              Use active reference
+                            </button>
+                          )}
+                          {animation.generationStartImageUrl && (
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-destructive hover:text-destructive"
+                              disabled={isGenerationFrameSaving}
+                              onClick={() =>
+                                void applyAnimationPatch(
+                                  { generationStartImageUrl: null },
+                                  { success: "Start frame cleared." }
+                                )
+                              }
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="text-[10px] text-muted-foreground"
+                          disabled={isGenerationFrameSaving}
+                          onChange={(e) =>
+                            void handleGenerationFrameUpload(
+                              "start",
+                              e.target.files?.[0] ?? null
+                            )
+                          }
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <p className="text-[10px] text-muted-foreground tracking-widest">
+                          End Frame
+                        </p>
+                        {generationLoop ? (
+                          <p className="text-[10px] text-muted-foreground">
+                            Using start frame.
+                          </p>
+                        ) : animation.generationEndImageUrl ? (
+                          <img
+                            src={animation.generationEndImageUrl}
+                            alt="End frame"
+                            className="w-full h-24 object-contain border border-border bg-muted/20"
+                          />
+                        ) : (
+                          <p className="text-[10px] text-muted-foreground">
+                            Optional end frame for interpolation.
+                          </p>
+                        )}
+                        <div className="flex items-center gap-2">
+                          {activeReference && !generationLoop && (
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary"
+                              disabled={isGenerationFrameSaving}
+                              onClick={() =>
+                                void applyAnimationPatch(
+                                  {
+                                    generationEndImageUrl: activeReference.url,
+                                    generationLoop: false,
+                                  },
+                                  { success: "End frame set." }
+                                )
+                              }
+                            >
+                              Use active reference
+                            </button>
+                          )}
+                          {animation.generationEndImageUrl && !generationLoop && (
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-destructive hover:text-destructive"
+                              disabled={isGenerationFrameSaving}
+                              onClick={() =>
+                                void applyAnimationPatch(
+                                  { generationEndImageUrl: null },
+                                  { success: "End frame cleared." }
+                                )
+                              }
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="text-[10px] text-muted-foreground"
+                          disabled={isGenerationFrameSaving || generationLoop}
+                          onChange={(e) =>
+                            void handleGenerationFrameUpload(
+                              "end",
+                              e.target.files?.[0] ?? null
+                            )
+                          }
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
+                </div>
+              )}
 
               <div className="tech-border bg-card p-4 space-y-2">
                 <p className="text-xs text-muted-foreground tracking-widest">Extract FPS</p>
@@ -1186,7 +1998,7 @@ export default function AnimationDetailPage() {
                             character.referenceImages[0].url
                           }
                           alt={character.name}
-                          className="w-16 h-16 object-cover border border-border"
+                          className="w-16 h-16 object-contain border border-border bg-muted/20"
                         />
                       )}
                       <div>
@@ -1220,7 +2032,7 @@ export default function AnimationDetailPage() {
                             <img
                               src={ref.url}
                               alt={`${ref.type} reference`}
-                              className="w-full aspect-square object-cover"
+                              className="w-full aspect-square object-contain bg-muted/20"
                             />
                           </button>
                         );

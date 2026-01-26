@@ -110,11 +110,11 @@ export const TimelineTrack = memo(function TimelineTrack({
 
                 {/* Frame thumbnail preview */}
                 {(generated?.url || kf?.image) && (
-                  <div className="absolute inset-1 overflow-hidden opacity-60">
+                  <div className="absolute inset-1 overflow-hidden opacity-60 bg-muted/20">
                     <img
                       src={generated?.url ?? kf?.image ?? ""}
                       alt=""
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-contain"
                     />
                   </div>
                 )}

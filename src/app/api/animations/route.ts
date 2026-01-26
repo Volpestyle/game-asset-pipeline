@@ -10,7 +10,12 @@ import {
 import {
   getDefaultVideoSize,
   coerceVideoSizeForModel,
+  getDefaultVideoSeconds,
+  coerceVideoSecondsForModel,
+  getVideoProviderForModel,
+  getVideoModelPromptProfile,
 } from "@/lib/ai/soraConstraints";
+import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
 
 export const runtime = "nodejs";
 
@@ -48,6 +53,10 @@ export async function POST(request: Request) {
     generationProvider,
     generationSeconds,
     generationSize,
+    generationLoop,
+    promptProfile,
+    promptConcise,
+    promptVerbose,
     extractFps,
     loopMode,
     sheetColumns,
@@ -55,11 +64,21 @@ export async function POST(request: Request) {
     frameHeight,
     referenceImageId,
     keyframes = [],
+    tooncrafterInterpolate,
+    tooncrafterColorCorrection,
+    tooncrafterSeed,
   } = payload ?? {};
 
-  if (!characterId || !name || !description) {
+  const resolvedStyle = String(style ?? "idle");
+  const resolvedDescription = String(description ?? "");
+  if (!characterId || !name || (resolvedStyle === "custom" && !resolvedDescription)) {
     return Response.json(
-      { error: "Missing characterId, name, or description." },
+      {
+        error:
+          resolvedStyle === "custom"
+            ? "Custom animations require a description."
+            : "Missing characterId or name.",
+      },
       { status: 400 }
     );
   }
@@ -74,51 +93,96 @@ export async function POST(request: Request) {
   const now = new Date().toISOString();
   let resolvedFrameWidth = Number(frameWidth ?? 0);
   let resolvedFrameHeight = Number(frameHeight ?? 0);
+  let characterStyle: string | undefined;
+  let bgKeyColor: string | undefined;
 
-  if (!resolvedFrameWidth || !resolvedFrameHeight) {
-    const characterPath = storagePath("characters", characterId, "character.json");
-    if (await fileExists(characterPath)) {
-      const character = await readJson<Record<string, unknown>>(characterPath);
+  const characterPath = storagePath("characters", characterId, "character.json");
+  if (await fileExists(characterPath)) {
+    const character = await readJson<Record<string, unknown>>(characterPath);
+    characterStyle = String(character.style ?? "");
+    bgKeyColor = String(
+      (character.workingSpec as { bgKeyColor?: string } | undefined)?.bgKeyColor ?? ""
+    );
+    if (!resolvedFrameWidth || !resolvedFrameHeight) {
       resolvedFrameWidth = Number(character.baseWidth ?? 253);
       resolvedFrameHeight = Number(character.baseHeight ?? 504);
-    } else {
-      resolvedFrameWidth = 253;
-      resolvedFrameHeight = 504;
     }
+  }
+
+  if (!resolvedFrameWidth || !resolvedFrameHeight) {
+    resolvedFrameWidth = 253;
+    resolvedFrameHeight = 504;
   }
 
   const requestedExtractFps = Number(extractFps ?? fps ?? 6);
   const resolvedExtractFps = [6, 8, 12].includes(requestedExtractFps)
     ? requestedExtractFps
     : 6;
-  const requestedSeconds = Number(generationSeconds ?? 4);
-  const resolvedSeconds = [4, 8, 12].includes(requestedSeconds)
-    ? requestedSeconds
-    : 4;
+  const resolvedModel = String(generationModel ?? "sora-2");
+  const requestedSeconds = Number(generationSeconds ?? getDefaultVideoSeconds(resolvedModel));
+  const resolvedSeconds = coerceVideoSecondsForModel(requestedSeconds, resolvedModel);
   const expectedFrameCount = resolvedSeconds * resolvedExtractFps;
 
-  const resolvedModel = String(generationModel ?? "sora-2");
   const requestedSize = String(generationSize ?? getDefaultVideoSize(resolvedModel));
   const resolvedSize = coerceVideoSizeForModel(requestedSize, resolvedModel);
 
   const resolvedColumns = Math.max(1, Number(sheetColumns ?? 6));
+  const requestedPromptProfile = String(promptProfile ?? "").trim();
+  const resolvedPromptProfile =
+    requestedPromptProfile === "concise" || requestedPromptProfile === "verbose"
+      ? requestedPromptProfile
+      : getVideoModelPromptProfile(resolvedModel);
+  const artStyle = characterStyle || "pixel-art";
+  const autoPromptConcise = buildVideoPrompt({
+    description: String(description ?? ""),
+    style: String(style ?? ""),
+    artStyle,
+    bgKeyColor: bgKeyColor || undefined,
+    promptProfile: "concise",
+  });
+  const autoPromptVerbose = buildVideoPrompt({
+    description: String(description ?? ""),
+    style: String(style ?? ""),
+    artStyle,
+    bgKeyColor: bgKeyColor || undefined,
+    promptProfile: "verbose",
+  });
+  const requestedConcise = typeof promptConcise === "string" ? promptConcise : "";
+  const requestedVerbose = typeof promptVerbose === "string" ? promptVerbose : "";
+  const resolvedPromptConcise = requestedConcise.trim() ? requestedConcise : autoPromptConcise;
+  const resolvedPromptVerbose = requestedVerbose.trim() ? requestedVerbose : autoPromptVerbose;
 
   const animation = {
     id,
     characterId,
     referenceImageId: referenceImageId ?? null,
     name,
-    description,
+    description: resolvedDescription,
     frameCount: Number(frameCount ?? expectedFrameCount),
     fps: Number(fps ?? resolvedExtractFps),
-    style: style ?? "idle",
+    style: resolvedStyle,
     spriteSize: Number(spriteSize ?? resolvedFrameWidth),
     frameWidth: resolvedFrameWidth,
     frameHeight: resolvedFrameHeight,
-    generationProvider: String(generationProvider ?? "openai"),
+    generationProvider: String(generationProvider ?? getVideoProviderForModel(resolvedModel)),
     generationModel: resolvedModel,
+    promptProfile: resolvedPromptProfile,
+    promptConcise: resolvedPromptConcise,
+    promptVerbose: resolvedPromptVerbose,
     generationSeconds: resolvedSeconds,
     generationSize: resolvedSize,
+    generationLoop: generationLoop === true,
+    generationStartImageUrl: null,
+    generationEndImageUrl: null,
+    tooncrafterInterpolate: tooncrafterInterpolate === true,
+    tooncrafterColorCorrection:
+      typeof tooncrafterColorCorrection === "boolean"
+        ? tooncrafterColorCorrection
+        : true,
+    tooncrafterSeed:
+      typeof tooncrafterSeed === "number" && Number.isFinite(tooncrafterSeed)
+        ? tooncrafterSeed
+        : null,
     extractFps: resolvedExtractFps,
     loopMode: (loopMode ?? "loop") === "pingpong" ? "pingpong" : "loop",
     sheetColumns: resolvedColumns,

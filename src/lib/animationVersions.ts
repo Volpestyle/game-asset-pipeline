@@ -31,6 +31,9 @@ type AnimationSnapshot = Pick<
   | "generationModel"
   | "generationSeconds"
   | "generationSize"
+  | "generationLoop"
+  | "generationStartImageUrl"
+  | "generationEndImageUrl"
   | "extractFps"
   | "loopMode"
   | "sheetColumns"
@@ -88,6 +91,9 @@ function buildSnapshot(animation: Animation): AnimationSnapshot {
     generationModel: animation.generationModel,
     generationSeconds: animation.generationSeconds,
     generationSize: animation.generationSize,
+    generationLoop: animation.generationLoop,
+    generationStartImageUrl: animation.generationStartImageUrl ?? undefined,
+    generationEndImageUrl: animation.generationEndImageUrl ?? undefined,
     extractFps: animation.extractFps,
     loopMode: animation.loopMode,
     sheetColumns: animation.sheetColumns,
@@ -185,6 +191,18 @@ function mapSnapshotUrls(
       : [],
     generatedSpritesheet: mapUrl(
       snapshot.generatedSpritesheet,
+      animationId,
+      versionId,
+      direction
+    ),
+    generationStartImageUrl: mapUrl(
+      snapshot.generationStartImageUrl,
+      animationId,
+      versionId,
+      direction
+    ),
+    generationEndImageUrl: mapUrl(
+      snapshot.generationEndImageUrl,
       animationId,
       versionId,
       direction

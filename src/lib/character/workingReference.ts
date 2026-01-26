@@ -20,6 +20,8 @@ type BuildWorkingReferenceOptions = {
   baseHeight?: number;
 };
 
+export type NormalizeImageOptions = BuildWorkingReferenceOptions;
+
 function parseHexColor(color: string) {
   const cleaned = color.replace("#", "").trim();
   if (cleaned.length !== 6) {
@@ -35,8 +37,8 @@ function parseHexColor(color: string) {
   };
 }
 
-export async function buildWorkingReference(
-  options: BuildWorkingReferenceOptions
+export async function normalizeImageToCanvas(
+  options: NormalizeImageOptions
 ): Promise<{
   baseWidth: number;
   baseHeight: number;
@@ -93,4 +95,16 @@ export async function buildWorkingReference(
     outputWidth: canvasW,
     outputHeight: canvasH,
   };
+}
+
+export async function buildWorkingReference(
+  options: BuildWorkingReferenceOptions
+): Promise<{
+  baseWidth: number;
+  baseHeight: number;
+  workingSpec: WorkingSpec;
+  outputWidth: number;
+  outputHeight: number;
+}> {
+  return normalizeImageToCanvas(options);
 }
