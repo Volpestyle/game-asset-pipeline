@@ -2,15 +2,116 @@ import { promises as fs } from "fs";
 import { createWriteStream } from "fs";
 import path from "path";
 import archiver from "archiver";
+import sharp from "sharp";
 import { buildAsepriteJson, inferFrameSize, loadPngDimensions } from "@/lib/aseprite";
 import { fileExists, readJson, storagePath, writeJson } from "@/lib/storage";
-import type { Animation as AnimationModel } from "@/types";
+import { getProjectSettings } from "@/lib/projectSettings";
+import {
+  normalizeFrameBatch,
+  getEffectiveSettings,
+} from "@/lib/canvasNormalization";
+import { composeSpritesheet } from "@/lib/spritesheet";
+import type { Animation as AnimationModel, Character, AnchorPoint } from "@/types";
 
 export const runtime = "nodejs";
 
+const DEFAULT_BG_KEY = "#FF00FF";
+const KEY_TOLERANCE = 12;
+
+function parseSize(size: string) {
+  const [w, h] = size.split("x").map((value) => Number(value));
+  const width = Number.isFinite(w) ? w : 0;
+  const height = Number.isFinite(h) ? h : 0;
+  return { width, height };
+}
+
+function parseHexColor(color: string) {
+  const cleaned = color.replace("#", "").trim();
+  const target = cleaned.length === 6 ? cleaned : "FF00FF";
+  const r = Number.parseInt(target.slice(0, 2), 16);
+  const g = Number.parseInt(target.slice(2, 4), 16);
+  const b = Number.parseInt(target.slice(4, 6), 16);
+  return {
+    r: Number.isFinite(r) ? r : 255,
+    g: Number.isFinite(g) ? g : 0,
+    b: Number.isFinite(b) ? b : 255,
+  };
+}
+
+function clampAlphaThreshold(value: unknown) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.min(255, Math.max(0, Math.round(numeric)));
+}
+
+async function resolveBgKeyColor(animation: AnimationModel) {
+  let bgKeyColor = DEFAULT_BG_KEY;
+  const generationSize = String(animation.generationSize ?? "");
+  const { width, height } = parseSize(generationSize);
+  const characterId = String(animation.characterId ?? "");
+  const referenceImageId = String(animation.referenceImageId ?? "default");
+  if (width && height && characterId) {
+    const specPath = storagePath(
+      "characters",
+      characterId,
+      "working",
+      `reference_${referenceImageId}_${width}x${height}.json`
+    );
+    if (await fileExists(specPath)) {
+      const spec = await readJson<{ bgKeyColor?: string }>(specPath);
+      if (spec?.bgKeyColor) {
+        bgKeyColor = spec.bgKeyColor;
+      }
+    }
+  }
+  return bgKeyColor;
+}
+
+async function processImageFile(options: {
+  inputPath: string;
+  outputPath: string;
+  keyColor?: string;
+  keyTolerance?: number;
+  alphaThreshold?: number;
+}) {
+  const { inputPath, outputPath, keyColor, keyTolerance, alphaThreshold } = options;
+  const { data, info } = await sharp(inputPath)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const target = keyColor ? parseHexColor(keyColor) : null;
+  const tolerance = keyTolerance ?? KEY_TOLERANCE;
+
+  for (let i = 0; i < data.length; i += 4) {
+    if (target) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const within =
+        Math.abs(r - target.r) <= tolerance &&
+        Math.abs(g - target.g) <= tolerance &&
+        Math.abs(b - target.b) <= tolerance;
+      if (within) {
+        data[i + 3] = 0;
+      }
+    }
+    if (typeof alphaThreshold === "number") {
+      data[i + 3] = data[i + 3] <= alphaThreshold ? 0 : 255;
+    }
+  }
+
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await sharp(data, {
+    raw: { width: info.width, height: info.height, channels: 4 },
+  })
+    .png()
+    .toFile(outputPath);
+}
+
 export async function POST(request: Request) {
   const payload = await request.json();
-  const { animationId } = payload ?? {};
+  const { animationId, normalize, removeBackground, alphaThreshold } = payload ?? {};
 
   if (!animationId) {
     return Response.json({ error: "Missing animationId." }, { status: 400 });
@@ -48,23 +149,133 @@ export async function POST(request: Request) {
     );
   }
 
-  const { width, height } = await loadPngDimensions(spritesheetPath);
-  const preferredSize = Number(animation.spriteSize ?? 48);
-  const frameWidth =
+  const exportDir = storagePath("animations", animationId, "exports");
+  await fs.mkdir(exportDir, { recursive: true });
+
+  // Get original frame dimensions
+  let frameWidth =
     Number(animation.spritesheetLayout?.frameWidth ?? animation.frameWidth ?? 0) ||
     Number(animation.spritesheetLayout?.frameSize ?? animation.spriteSize ?? 0);
-  const frameHeight =
+  let frameHeight =
     Number(animation.spritesheetLayout?.frameHeight ?? animation.frameHeight ?? 0) ||
     Number(animation.spritesheetLayout?.frameSize ?? animation.spriteSize ?? 0);
+
+  const generatedFrames = animation.generatedFrames ?? [];
+  const frameCount = generatedFrames.length || animation.actualFrameCount || 0;
+
+  // Handle normalization if requested
+  let finalSpritesheetPath = spritesheetPath;
+  let finalFramesDir = storagePath("animations", animationId, "generated", "frames");
+  let normalizedExport = false;
+  const sanitizedThreshold = clampAlphaThreshold(alphaThreshold);
+  const applyAlphaThreshold =
+    typeof sanitizedThreshold === "number" && sanitizedThreshold > 0;
+  const applyBackgroundRemoval = Boolean(removeBackground);
+  const applyExportCleanup = applyAlphaThreshold || applyBackgroundRemoval;
+  const bgKeyColor = applyBackgroundRemoval
+    ? await resolveBgKeyColor(animation)
+    : DEFAULT_BG_KEY;
+
+  if (normalize) {
+    // Load project settings and character settings
+    const projectSettings = await getProjectSettings();
+    let characterSettings: { anchor?: AnchorPoint; scale?: number } | undefined;
+
+    if (animation.characterId) {
+      const characterPath = storagePath(
+        "characters",
+        animation.characterId,
+        "character.json"
+      );
+      if (await fileExists(characterPath)) {
+        const character = await readJson<Character>(characterPath);
+        characterSettings = {
+          anchor: character.anchor,
+          scale: character.scale,
+        };
+      }
+    }
+
+    const settings = getEffectiveSettings(projectSettings, characterSettings);
+
+    // Normalize frames
+    const framesDir = storagePath("animations", animationId, "generated", "frames");
+    const normalizedDir = path.join(exportDir, "normalized");
+    await fs.mkdir(normalizedDir, { recursive: true });
+
+    try {
+      const frameFiles = await fs.readdir(framesDir);
+      const orderedFrames = frameFiles
+        .filter((f) => f.endsWith(".png"))
+        .sort((a, b) => {
+          const matchA = a.match(/frame_(\d+)\.png/);
+          const matchB = b.match(/frame_(\d+)\.png/);
+          return (matchA ? Number(matchA[1]) : 0) - (matchB ? Number(matchB[1]) : 0);
+        });
+
+      if (orderedFrames.length > 0) {
+        const inputPaths = orderedFrames.map((f) => path.join(framesDir, f));
+        const outputPaths = orderedFrames.map((f) => path.join(normalizedDir, f));
+
+        await normalizeFrameBatch({
+          inputPaths,
+          outputPaths,
+          canvasWidth: settings.canvasWidth,
+          canvasHeight: settings.canvasHeight,
+          anchor: settings.anchor,
+          scale: settings.scale,
+          pixelArt: true,
+          consistentBounds: true,
+        });
+
+        // Update frame dimensions to normalized canvas size
+        frameWidth = settings.canvasWidth;
+        frameHeight = settings.canvasHeight;
+        finalFramesDir = normalizedDir;
+        normalizedExport = true;
+
+        // Compose new spritesheet from normalized frames
+        const columns = animation.sheetColumns ?? Math.ceil(Math.sqrt(orderedFrames.length));
+        const rows = Math.ceil(orderedFrames.length / columns);
+        const normalizedSpritesheetPath = path.join(
+          exportDir,
+          `spritesheet_normalized_${Date.now()}.png`
+        );
+
+        await composeSpritesheet({
+          framesDir: normalizedDir,
+          outputPath: normalizedSpritesheetPath,
+          layout: {
+            frameWidth: settings.canvasWidth,
+            frameHeight: settings.canvasHeight,
+            columns,
+            rows,
+            width: columns * settings.canvasWidth,
+            height: rows * settings.canvasHeight,
+          },
+        });
+
+        finalSpritesheetPath = normalizedSpritesheetPath;
+      }
+    } catch (err) {
+      console.error("Normalization failed, falling back to original:", err);
+    }
+  }
+
+  const { width, height } = await loadPngDimensions(finalSpritesheetPath);
+  const preferredSize = Number(animation.spriteSize ?? 48);
   const frameSize =
     frameWidth && frameHeight
       ? undefined
       : inferFrameSize(width, height, preferredSize);
-  const generatedFrames = animation.generatedFrames ?? [];
-  const frameCount = generatedFrames.length || animation.actualFrameCount;
+
+  // Determine export filename based on normalization
+  const exportFilename = normalizedExport
+    ? `spritesheet_normalized.png`
+    : filename;
 
   const { arrayJson, hashJson } = buildAsepriteJson({
-    imageName: filename,
+    imageName: exportFilename,
     imageWidth: width,
     imageHeight: height,
     frameSize,
@@ -74,11 +285,17 @@ export async function POST(request: Request) {
     frameCount: typeof frameCount === "number" ? frameCount : undefined,
   });
 
-  const exportDir = storagePath("animations", animationId, "exports");
-  await fs.mkdir(exportDir, { recursive: true });
-
-  const exportSpritesheet = path.join(exportDir, filename);
-  await fs.copyFile(spritesheetPath, exportSpritesheet);
+  const exportSpritesheet = path.join(exportDir, exportFilename);
+  if (applyExportCleanup) {
+    await processImageFile({
+      inputPath: finalSpritesheetPath,
+      outputPath: exportSpritesheet,
+      keyColor: applyBackgroundRemoval ? bgKeyColor : undefined,
+      alphaThreshold: applyAlphaThreshold ? sanitizedThreshold ?? undefined : undefined,
+    });
+  } else {
+    await fs.copyFile(finalSpritesheetPath, exportSpritesheet);
+  }
 
   const hashPath = path.join(exportDir, "spritesheet-hash.json");
   const arrayPath = path.join(exportDir, "spritesheet-array.json");
@@ -86,10 +303,9 @@ export async function POST(request: Request) {
   await fs.writeFile(arrayPath, JSON.stringify(arrayJson, null, 2));
 
   let pngSequenceUrl: string | undefined;
-  const framesDir = storagePath("animations", animationId, "generated", "frames");
   let exportFramesDir: string | null = null;
   try {
-    const frameFiles = await fs.readdir(framesDir);
+    const frameFiles = await fs.readdir(finalFramesDir);
     if (frameFiles.length > 0) {
       exportFramesDir = path.join(exportDir, "frames");
       await fs.mkdir(exportFramesDir, { recursive: true });
@@ -116,10 +332,18 @@ export async function POST(request: Request) {
       };
 
       for (const frameFile of ordered) {
-        await fs.copyFile(
-          path.join(framesDir, frameFile),
-          path.join(exportFramesDir, frameFile)
-        );
+        const inputPath = path.join(finalFramesDir, frameFile);
+        const outputPath = path.join(exportFramesDir, frameFile);
+        if (applyExportCleanup) {
+          await processImageFile({
+            inputPath,
+            outputPath,
+            keyColor: applyBackgroundRemoval ? bgKeyColor : undefined,
+            alphaThreshold: applyAlphaThreshold ? sanitizedThreshold ?? undefined : undefined,
+          });
+        } else {
+          await fs.copyFile(inputPath, outputPath);
+        }
       }
 
       await fs.writeFile(
@@ -144,7 +368,7 @@ export async function POST(request: Request) {
   });
 
   archive.pipe(output);
-  archive.file(exportSpritesheet, { name: filename });
+  archive.file(exportSpritesheet, { name: exportFilename });
   archive.file(hashPath, { name: "spritesheet-hash.json" });
   archive.file(arrayPath, { name: "spritesheet-array.json" });
   if (exportFramesDir) {
@@ -157,7 +381,7 @@ export async function POST(request: Request) {
   const updated = {
     ...animation,
     exports: {
-      spritesheetUrl: `/api/storage/animations/${animationId}/exports/${filename}`,
+      spritesheetUrl: `/api/storage/animations/${animationId}/exports/${exportFilename}`,
       asepriteJsonHashUrl: `/api/storage/animations/${animationId}/exports/spritesheet-hash.json`,
       asepriteJsonArrayUrl: `/api/storage/animations/${animationId}/exports/spritesheet-array.json`,
       pngSequenceUrl,
@@ -165,6 +389,9 @@ export async function POST(request: Request) {
         ? `/api/storage/animations/${animationId}/exports/frames/index.json`
         : undefined,
       zipBundleUrl: `/api/storage/animations/${animationId}/exports/${zipFilename}`,
+      normalized: normalizedExport,
+      backgroundRemoved: applyBackgroundRemoval || undefined,
+      alphaThreshold: applyAlphaThreshold ? sanitizedThreshold ?? undefined : undefined,
     },
     updatedAt: new Date().toISOString(),
   };
