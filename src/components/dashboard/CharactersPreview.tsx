@@ -85,7 +85,7 @@ export function CharactersPreview() {
             return (
               <Link
                 key={character.id}
-                href={`/animations/new?characterId=${character.id}`}
+                href={`/characters/${character.id}`}
                 className="tech-border bg-card/70 p-3 hover-highlight block"
               >
                 <div className="flex items-center gap-3">

@@ -8,6 +8,7 @@ import {
   PipelineTools,
   OutputConfig,
   ExportTargets,
+  ModelStudio,
 } from "@/components/dashboard";
 
 export default function Home() {
@@ -28,6 +29,11 @@ export default function Home() {
           <div className="grid grid-cols-12 gap-4">
             <CharactersPreview />
             <RecentActivity />
+          </div>
+
+          {/* Model Studio Row */}
+          <div className="grid grid-cols-12 gap-4">
+            <ModelStudio />
           </div>
 
           {/* Bottom Row: Quick Tools + Output Config */}

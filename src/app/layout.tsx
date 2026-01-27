@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Space_Mono } from "next/font/google";
+import { Sidebar, SidebarProvider, SidebarShell } from "@/components/layout";
 import "./globals.css";
 
 const spaceMono = Space_Mono({
@@ -24,7 +25,12 @@ export default function RootLayout({
         className={`${spaceMono.variable} font-sans antialiased`}
       >
         <div className="scanlines min-h-screen">
-          {children}
+          <SidebarProvider>
+            <Sidebar />
+            <SidebarShell>
+              {children}
+            </SidebarShell>
+          </SidebarProvider>
         </div>
       </body>
     </html>

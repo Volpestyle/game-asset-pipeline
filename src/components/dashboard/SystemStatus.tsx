@@ -12,10 +12,6 @@ export function SystemStatus() {
       </div>
       <div className="space-y-2 text-xs">
         <div className="flex justify-between">
-          <span className="text-muted-foreground">Engine</span>
-          <span>AI GEN v3</span>
-        </div>
-        <div className="flex justify-between">
           <span className="text-muted-foreground">API</span>
           <span className="text-success">Connected</span>
         </div>
