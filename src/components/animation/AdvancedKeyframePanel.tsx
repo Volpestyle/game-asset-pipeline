@@ -4,7 +4,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { InterpolationGraph } from "./InterpolationGraph";
-import type { Animation, Character, EasingType } from "@/types";
+import { getImageModelConfig } from "@/lib/ai/imageModelConfig";
+import type { Animation, AnimationReference, Character, EasingType, KeyframeGeneration } from "@/types";
 
 const RD_FAST_STYLES = [
   "game_asset",
@@ -61,6 +62,8 @@ export interface KeyframeFormData {
   seed: string;
   bypassPromptExpansion: boolean;
   easing: EasingType;
+  // Multi-image support for nano-banana-pro
+  referenceImages?: string[];
 }
 
 interface AdvancedKeyframePanelProps {
@@ -72,11 +75,20 @@ interface AdvancedKeyframePanelProps {
   onClearKeyframe?: (frameIndex: number) => Promise<void>;
   onReferenceSelect?: (referenceImageId: string | null) => void;
   isWorking: boolean;
+  generationHistory?: KeyframeGeneration[];
+  savedGenerations?: KeyframeGeneration[];
+  onGenerationSave?: (generation: KeyframeGeneration) => void;
+  onGenerationUse?: (generation: KeyframeGeneration) => void;
+  onGenerationDownload?: (generation: KeyframeGeneration) => void;
+  generationActionId?: string | null;
   // Interpolation props
   interpolationModel?: string;
   onInterpolationModelChange?: (model: string) => void;
   onInterpolate?: () => void;
   isInterpolating?: boolean;
+  // Animation reference management
+  onAnimationRefUpload?: (file: File) => Promise<AnimationReference | null>;
+  onAnimationRefDelete?: (referenceId: string) => Promise<void>;
 }
 
 const STORAGE_KEY = "keyframe-panel-expanded";
@@ -90,10 +102,18 @@ export function AdvancedKeyframePanel({
   onClearKeyframe,
   onReferenceSelect,
   isWorking,
+  generationHistory = [],
+  savedGenerations = [],
+  onGenerationSave,
+  onGenerationUse,
+  onGenerationDownload,
+  generationActionId = null,
   interpolationModel = "rd-plus",
   onInterpolationModelChange,
   onInterpolate,
   isInterpolating = false,
+  onAnimationRefUpload,
+  onAnimationRefDelete,
 }: AdvancedKeyframePanelProps) {
   const [expanded, setExpanded] = useState(() => {
     if (typeof window === "undefined") return true;
@@ -113,6 +133,11 @@ export function AdvancedKeyframePanel({
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
   const [isFetchingRef, setIsFetchingRef] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const multiRefInputRef = useRef<HTMLInputElement>(null);
+
+  // Multi-reference image selection state
+  const [selectedCharacterRefs, setSelectedCharacterRefs] = useState<Set<string>>(new Set());
+  const [selectedAnimationRefs, setSelectedAnimationRefs] = useState<Set<string>>(new Set());
 
   // Get existing keyframe data if present
   const existingKeyframe = animation.keyframes?.find((kf) => kf.frameIndex === currentFrame);
@@ -137,14 +162,101 @@ export function AdvancedKeyframePanel({
   });
 
   const isRdModel = formData.model === "rd-fast" || formData.model === "rd-plus";
+  const modelConfig = getImageModelConfig(formData.model);
+  const supportsMultiRef = modelConfig.supportsMultipleImages;
+  const maxImageCount = modelConfig.maxImageCount;
   const styleOptions = isRdModel
     ? formData.model === "rd-plus"
       ? RD_PLUS_STYLES
       : RD_FAST_STYLES
     : ["default"];
 
+  // Calculate selected reference count for multi-ref models
+  const totalSelectedRefs = selectedCharacterRefs.size + selectedAnimationRefs.size;
+
+  const savedGenerationImages = new Set(
+    savedGenerations.map((generation) => generation.image)
+  );
+
+  const formatGenerationTime = (value: string | undefined) => {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.valueOf())) return "";
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
   const handleAction = async (mode: "upload" | "generate" | "refine") => {
-    await onKeyframeAction(mode, { ...formData, frameIndex: currentFrame });
+    // Collect selected reference image URLs for multi-ref models
+    let referenceImages: string[] | undefined;
+    if (supportsMultiRef && totalSelectedRefs > 0) {
+      const urls: string[] = [];
+      // Add selected character references
+      character?.referenceImages?.forEach((ref) => {
+        if (selectedCharacterRefs.has(ref.id)) {
+          urls.push(ref.url);
+        }
+      });
+      // Add selected animation references
+      animation.references?.forEach((ref) => {
+        if (selectedAnimationRefs.has(ref.id)) {
+          urls.push(ref.url);
+        }
+      });
+      if (urls.length > 0) {
+        referenceImages = urls;
+      }
+    }
+    await onKeyframeAction(mode, { ...formData, frameIndex: currentFrame, referenceImages });
+  };
+
+  const handleMultiRefUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !onAnimationRefUpload) return;
+
+    const newRef = await onAnimationRefUpload(file);
+    if (newRef) {
+      // Auto-select newly uploaded reference
+      setSelectedAnimationRefs((prev) => new Set([...prev, newRef.id]));
+    }
+    // Reset the input
+    if (multiRefInputRef.current) {
+      multiRefInputRef.current.value = "";
+    }
+  };
+
+  const handleAnimationRefDelete = async (refId: string) => {
+    if (!onAnimationRefDelete) return;
+    await onAnimationRefDelete(refId);
+    // Remove from selection
+    setSelectedAnimationRefs((prev) => {
+      const next = new Set(prev);
+      next.delete(refId);
+      return next;
+    });
+  };
+
+  const toggleCharacterRef = (refId: string) => {
+    setSelectedCharacterRefs((prev) => {
+      const next = new Set(prev);
+      if (next.has(refId)) {
+        next.delete(refId);
+      } else if (totalSelectedRefs < maxImageCount) {
+        next.add(refId);
+      }
+      return next;
+    });
+  };
+
+  const toggleAnimationRef = (refId: string) => {
+    setSelectedAnimationRefs((prev) => {
+      const next = new Set(prev);
+      if (next.has(refId)) {
+        next.delete(refId);
+      } else if (totalSelectedRefs < maxImageCount) {
+        next.add(refId);
+      }
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -306,6 +418,133 @@ export function AdvancedKeyframePanel({
             className="terminal-input w-full h-9 px-3 text-sm bg-card"
           />
         </div>
+
+        {/* Multi-reference image selection (for nano-banana-pro) */}
+        {supportsMultiRef && (
+          <div className="space-y-3 pt-2 border-t border-border">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] text-muted-foreground tracking-widest">
+                REFERENCE IMAGES
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-muted-foreground">
+                  {totalSelectedRefs}/{maxImageCount}
+                </span>
+                <input
+                  ref={multiRefInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleMultiRefUpload}
+                  className="hidden"
+                  disabled={isWorking}
+                />
+                <button
+                  type="button"
+                  onClick={() => multiRefInputRef.current?.click()}
+                  disabled={isWorking}
+                  className="text-[10px] text-primary hover:underline disabled:opacity-50"
+                >
+                  + UPLOAD
+                </button>
+              </div>
+            </div>
+
+            {/* Character References */}
+            {character?.referenceImages && character.referenceImages.length > 0 && (
+              <div className="space-y-2">
+                <span className="text-[10px] text-muted-foreground">Character References</span>
+                <div className="flex flex-wrap gap-2">
+                  {character.referenceImages.map((ref) => {
+                    const isSelected = selectedCharacterRefs.has(ref.id);
+                    const canSelect = isSelected || totalSelectedRefs < maxImageCount;
+                    return (
+                      <button
+                        key={ref.id}
+                        type="button"
+                        onClick={() => toggleCharacterRef(ref.id)}
+                        disabled={!canSelect}
+                        className={`relative border p-1 transition-colors ${
+                          isSelected
+                            ? "border-primary bg-primary/10"
+                            : canSelect
+                            ? "border-border hover:border-primary/50"
+                            : "border-border/50 opacity-50 cursor-not-allowed"
+                        }`}
+                        title={`${ref.type} reference`}
+                      >
+                        <img
+                          src={ref.url}
+                          alt={`${ref.type} reference`}
+                          className="w-12 h-12 object-contain bg-muted/20"
+                        />
+                        {isSelected && (
+                          <span className="absolute -top-1 -right-1 w-4 h-4 bg-primary text-primary-foreground text-[8px] flex items-center justify-center rounded-full">
+                            ✓
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Animation References */}
+            {animation.references && animation.references.length > 0 && (
+              <div className="space-y-2">
+                <span className="text-[10px] text-muted-foreground">Animation References</span>
+                <div className="flex flex-wrap gap-2">
+                  {animation.references.map((ref) => {
+                    const isSelected = selectedAnimationRefs.has(ref.id);
+                    const canSelect = isSelected || totalSelectedRefs < maxImageCount;
+                    return (
+                      <div key={ref.id} className="relative">
+                        <button
+                          type="button"
+                          onClick={() => toggleAnimationRef(ref.id)}
+                          disabled={!canSelect}
+                          className={`relative border p-1 transition-colors ${
+                            isSelected
+                              ? "border-primary bg-primary/10"
+                              : canSelect
+                              ? "border-border hover:border-primary/50"
+                              : "border-border/50 opacity-50 cursor-not-allowed"
+                          }`}
+                        >
+                          <img
+                            src={ref.url}
+                            alt="Animation reference"
+                            className="w-12 h-12 object-contain bg-muted/20"
+                          />
+                          {isSelected && (
+                            <span className="absolute -top-1 -right-1 w-4 h-4 bg-primary text-primary-foreground text-[8px] flex items-center justify-center rounded-full">
+                              ✓
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleAnimationRefDelete(ref.id)}
+                          disabled={isWorking}
+                          className="absolute -top-1 -left-1 w-4 h-4 bg-destructive text-destructive-foreground text-[10px] flex items-center justify-center rounded-full hover:bg-destructive/80 disabled:opacity-50"
+                          title="Remove reference"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {totalSelectedRefs === 0 && (
+              <p className="text-[10px] text-muted-foreground">
+                Select references above or upload new ones. Selected images will be used for generation.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Style and Strength row */}
         <div className="grid grid-cols-2 gap-4">
@@ -689,7 +928,7 @@ export function AdvancedKeyframePanel({
             disabled={isWorking}
             className="bg-primary hover:bg-primary/80 text-primary-foreground h-8 px-3 text-[10px] tracking-wider"
           >
-            GENERATE
+            {isWorking ? "WORKING" : existingKeyframe?.image ? "REGENERATE" : "GENERATE"}
           </Button>
           <Button
             variant="outline"
@@ -708,6 +947,135 @@ export function AdvancedKeyframePanel({
             CLEAR
           </Button>
         </div>
+
+        {(generationHistory.length > 0 || savedGenerations.length > 0) && (
+          <div className="pt-3 border-t border-border space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-muted-foreground tracking-wider">
+                KEYFRAME GENERATIONS
+              </span>
+              <span className="text-[10px] text-muted-foreground">
+                {generationHistory.length} recent · {savedGenerations.length} saved
+              </span>
+            </div>
+
+            {generationHistory.length > 0 && (
+              <div className="space-y-2">
+                <span className="text-[10px] text-muted-foreground">Recent</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {generationHistory.map((generation) => {
+                    const isCurrent = existingKeyframe?.image === generation.image;
+                    const isSaved = savedGenerationImages.has(generation.image);
+                    const isSaving = generationActionId === generation.id;
+                    return (
+                      <div
+                        key={generation.id}
+                        className="border border-border/60 bg-background/40 p-2 space-y-2"
+                      >
+                        <div className="flex items-center justify-between text-[9px] text-muted-foreground">
+                          <span>{generation.model ?? "image"}</span>
+                          <span>{formatGenerationTime(generation.createdAt)}</span>
+                        </div>
+                        <div className="border border-border bg-muted/20 overflow-hidden flex items-center justify-center">
+                          <img
+                            src={generation.image}
+                            alt="Generated keyframe"
+                            className="w-full h-24 object-contain"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px]">
+                          <button
+                            type="button"
+                            onClick={() => onGenerationUse?.(generation)}
+                            disabled={isWorking || isCurrent}
+                            className={`px-2 py-1 border transition-colors ${
+                              isCurrent
+                                ? "border-success/60 text-success"
+                                : "border-border text-primary hover:border-primary"
+                            }`}
+                          >
+                            {isCurrent ? "ACTIVE" : "USE"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onGenerationSave?.(generation)}
+                            disabled={isWorking || isSaved || isSaving}
+                            className={`px-2 py-1 border transition-colors ${
+                              isSaved
+                                ? "border-success/40 text-success"
+                                : "border-border text-foreground hover:border-primary"
+                            }`}
+                          >
+                            {isSaved ? "SAVED" : isSaving ? "SAVING..." : "SAVE"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onGenerationDownload?.(generation)}
+                            disabled={isWorking}
+                            className="px-2 py-1 border border-border text-primary hover:border-primary transition-colors"
+                          >
+                            DOWNLOAD
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {savedGenerations.length > 0 && (
+              <div className="space-y-2">
+                <span className="text-[10px] text-muted-foreground">Saved</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {savedGenerations.map((generation) => {
+                    const isCurrent = existingKeyframe?.image === generation.image;
+                    return (
+                      <div
+                        key={generation.id}
+                        className="border border-border/60 bg-background/40 p-2 space-y-2"
+                      >
+                        <div className="flex items-center justify-between text-[9px] text-muted-foreground">
+                          <span>{generation.model ?? "image"}</span>
+                          <span>{formatGenerationTime(generation.createdAt)}</span>
+                        </div>
+                        <div className="border border-border bg-muted/20 overflow-hidden flex items-center justify-center">
+                          <img
+                            src={generation.image}
+                            alt="Saved keyframe"
+                            className="w-full h-24 object-contain"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px]">
+                          <button
+                            type="button"
+                            onClick={() => onGenerationUse?.(generation)}
+                            disabled={isWorking || isCurrent}
+                            className={`px-2 py-1 border transition-colors ${
+                              isCurrent
+                                ? "border-success/60 text-success"
+                                : "border-border text-primary hover:border-primary"
+                            }`}
+                          >
+                            {isCurrent ? "ACTIVE" : "USE"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onGenerationDownload?.(generation)}
+                            disabled={isWorking}
+                            className="px-2 py-1 border border-border text-primary hover:border-primary transition-colors"
+                          >
+                            DOWNLOAD
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>}
     </div>
   );

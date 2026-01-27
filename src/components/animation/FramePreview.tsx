@@ -16,6 +16,7 @@ interface FramePreviewProps {
   animation: Animation;
   currentFrame: number;
   showComparison?: boolean;
+  referenceImageUrl?: string | null;
 }
 
 const ZOOM_LEVELS = [1, 2, 4, 8, 16];
@@ -194,6 +195,7 @@ export function FramePreview({
   animation,
   currentFrame,
   showComparison = false,
+  referenceImageUrl,
 }: FramePreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const modalCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -226,6 +228,14 @@ export function FramePreview({
   const generatedFrame = animation.generatedFrames?.find(
     (frame) => frame.frameIndex === currentFrame
   );
+  const keyframe = animation.keyframes?.find((kf) => kf.frameIndex === currentFrame);
+  const startOverride =
+    typeof animation.generationStartImageUrl === "string"
+      ? animation.generationStartImageUrl
+      : null;
+  const fallbackFrameUrl =
+    currentFrame === 0 ? startOverride ?? referenceImageUrl ?? undefined : undefined;
+  const resolvedFrameUrl = generatedFrame?.url ?? keyframe?.image ?? fallbackFrameUrl;
   const layout = animation.spritesheetLayout;
   const frameWidth =
     layout?.frameWidth ?? layout?.frameSize ?? animation.frameWidth ?? animation.spriteSize;
@@ -242,8 +252,6 @@ export function FramePreview({
     layout?.columns && layout.columns > 0
       ? layout.columns
       : Math.max(1, Math.ceil(Math.sqrt(safeFrameCount)));
-
-  const keyframe = animation.keyframes?.find((kf) => kf.frameIndex === currentFrame);
 
   // Calculate fit zoom to contain the frame within the preview container
   const fitZoom = useMemo(() => {
@@ -486,7 +494,7 @@ export function FramePreview({
                 spritesheetUrl={spritesheetUrl ?? undefined}
                 isLoaded={isLoaded}
                 error={error}
-                generatedFrameUrl={generatedFrame?.url}
+                generatedFrameUrl={resolvedFrameUrl}
                 canvasRef={canvasRef}
                 containerRef={containerRef}
                 currentZoom={zoom}
@@ -626,7 +634,7 @@ export function FramePreview({
               spritesheetUrl={spritesheetUrl ?? undefined}
               isLoaded={isLoaded}
               error={error}
-              generatedFrameUrl={generatedFrame?.url}
+              generatedFrameUrl={resolvedFrameUrl}
               canvasRef={modalCanvasRef}
               containerRef={modalContainerRef}
               currentZoom={modalZoom}

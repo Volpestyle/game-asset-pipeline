@@ -5,13 +5,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout";
-import { CloudUpload } from "iconoir-react";
-import { cn } from "@/lib/utils";
 import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
 import {
   TimelineEditor,
   FramePreview,
-  FrameStrip,
   AdvancedKeyframePanel,
   ExportPanel,
   ModelConstraints,
@@ -22,14 +19,27 @@ import {
   isSizeValidForModel,
   getVideoModelOptions,
   getVideoSecondsOptions,
-  getVideoProviderForModel,
   getVideoModelSupportsStartEnd,
   getVideoModelSupportsLoop,
+  getVideoModelSupportsContinuation,
+  getVideoModelSupportsNegativePrompt,
   getVideoModelPromptProfile,
   getVideoModelLabel,
 } from "@/components/animation";
 import type { KeyframeFormData } from "@/components/animation";
-import type { Animation, AnimationStyle, Character, PromptProfile } from "@/types";
+import { requestJson, requestFormData } from "@/lib/api/client";
+import type {
+  Animation,
+  AnimationStyle,
+  BackgroundRemovalMode,
+  GenerationProvider,
+  PromptProfile,
+  KeyframeGeneration,
+} from "@/types";
+import { ImportPanel } from "./components/ImportPanel";
+import { VersionManager } from "./components/VersionManager";
+import { useAnimationLoader } from "./hooks/useAnimationLoader";
+import { useGenerationPlan } from "./hooks/useGenerationPlan";
 
 const STYLE_OPTIONS: { value: AnimationStyle; label: string; code: string }[] = [
   { value: "idle", label: "Idle", code: "IDL" },
@@ -45,41 +55,42 @@ const PROMPT_PROFILE_OPTIONS: { value: PromptProfile; label: string }[] = [
   { value: "verbose", label: "Verbose" },
 ];
 
+const PROVIDER_OPTIONS: { value: GenerationProvider; label: string }[] = [
+  { value: "openai", label: "OpenAI" },
+  { value: "replicate", label: "Replicate" },
+];
+
 export default function AnimationDetailPage() {
   const params = useParams();
   const animationId = String(params.id ?? "");
 
-  const [animation, setAnimation] = useState<Animation | null>(null);
-  const [savedAnimation, setSavedAnimation] = useState<Animation | null>(null);
-  const [character, setCharacter] = useState<Character | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const {
+    animation,
+    setAnimation,
+    savedAnimation,
+    character,
+    isLoading,
+    error,
+    setError,
+    loadAnimation,
+    updateAnimationState,
+  } = useAnimationLoader(animationId);
   const [isSaving, setIsSaving] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRebuilding, setIsRebuilding] = useState(false);
+  const [isRemovingBackground, setIsRemovingBackground] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [currentFrame, setCurrentFrame] = useState(0);
   const [isKeyframeWorking, setIsKeyframeWorking] = useState(false);
+  const [keyframeGenerations, setKeyframeGenerations] = useState<
+    Record<number, KeyframeGeneration[]>
+  >({});
+  const [generationActionId, setGenerationActionId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"timeline" | "settings">("timeline");
-  const [isInterpolating, setIsInterpolating] = useState(false);
-  const [interpolationModel, setInterpolationModel] = useState<
-    "rd-fast" | "rd-plus"
-  >("rd-plus");
   const [isRefSaving, setIsRefSaving] = useState(false);
-  const [isVersionWorking, setIsVersionWorking] = useState(false);
-  const [versionName, setVersionName] = useState("");
-  const [importFile, setImportFile] = useState<File | null>(null);
-  const [isImporting, setIsImporting] = useState(false);
-  const [importSkipRoi, setImportSkipRoi] = useState(true);
-  const modelOptions = useMemo(() => getVideoModelOptions(), []);
-  const [importDragOver, setImportDragOver] = useState(false);
+  const allModelOptions = useMemo(() => getVideoModelOptions(), []);
   const [isGenerationFrameSaving, setIsGenerationFrameSaving] = useState(false);
-  const [importVideoMeta, setImportVideoMeta] = useState<{
-    duration: number;
-    width: number;
-    height: number;
-  } | null>(null);
   const [spritesheetExpanded, setSpritesheetExpanded] = useState(() => {
     if (typeof window === "undefined") return true;
     const stored = localStorage.getItem("spritesheet-panel-expanded");
@@ -88,86 +99,41 @@ export default function AnimationDetailPage() {
   const [isPromptEditing, setIsPromptEditing] = useState(false);
   const [draftPromptConcise, setDraftPromptConcise] = useState("");
   const [draftPromptVerbose, setDraftPromptVerbose] = useState("");
+  const selectedProvider =
+    animation?.generationProvider === "openai" || animation?.generationProvider === "replicate"
+      ? animation.generationProvider
+      : "";
+  const modelOptions = useMemo(() => {
+    if (!selectedProvider) return [];
+    return allModelOptions.filter((option) => option.provider === selectedProvider);
+  }, [allModelOptions, selectedProvider]);
 
-  const updateAnimationState = useCallback((newAnim: Animation | null) => {
-    setAnimation(newAnim);
-    setSavedAnimation(newAnim);
-  }, []);
+  const savedGenerations = useMemo(() => {
+    const keyframe = animation?.keyframes?.find((kf) => kf.frameIndex === currentFrame);
+    const generations = Array.isArray(keyframe?.generations) ? keyframe.generations : [];
+    return generations.filter((generation) => generation.saved !== false);
+  }, [animation, currentFrame]);
 
-  const loadAnimation = useCallback(async (options?: { silent?: boolean }) => {
-    if (!animationId) return;
-    if (!options?.silent) {
-      setIsLoading(true);
-      setError(null);
-    }
-    try {
-      const response = await fetch(`/api/animations/${animationId}`, { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error("Animation not found.");
-      }
-      const data = await response.json();
-      let nextAnimation = data.animation as Animation;
-      const model = String(nextAnimation.generationModel ?? "sora-2");
-      const currentSize = String(nextAnimation.generationSize ?? "");
-      const coercedSize = coerceVideoSizeForModel(
-        currentSize || undefined,
-        model
-      );
-      if (coercedSize !== currentSize) {
-        nextAnimation = { ...nextAnimation, generationSize: coercedSize };
-        if (String(nextAnimation.generationNote ?? "").includes("Invalid size")) {
-          nextAnimation = {
-            ...nextAnimation,
-            generationNote: `Adjusted video size to ${coercedSize} for ${model}.`,
-          };
-        }
-      }
-      const currentSeconds = Number(nextAnimation.generationSeconds ?? NaN);
-      const coercedSeconds = coerceVideoSecondsForModel(currentSeconds, model);
-      if (coercedSeconds !== currentSeconds) {
-        const fpsValue = Number(nextAnimation.extractFps ?? nextAnimation.fps ?? 6);
-        const frameCount = getExpectedFrameCount(coercedSeconds, fpsValue);
-        nextAnimation = {
-          ...nextAnimation,
-          generationSeconds: coercedSeconds,
-          frameCount,
-        };
-      }
-      setAnimation(nextAnimation);
-      // setSavedAnimation should only be called if we trust the server state as "clean"
-      // If we are polling, we might overwrite local changes.
-      // But standard behavior for this app seems to be "server wins" on poll.
-      updateAnimationState(nextAnimation);
+  const recentGenerations = useMemo(() => {
+    const recent = keyframeGenerations[currentFrame] ?? [];
+    if (savedGenerations.length === 0) return recent;
+    const savedImages = new Set(savedGenerations.map((generation) => generation.image));
+    return recent.filter((generation) => !savedImages.has(generation.image));
+  }, [currentFrame, keyframeGenerations, savedGenerations]);
 
-      const characterResponse = await fetch(`/api/characters/${data.animation.characterId}`, { cache: "no-store" });
-      if (characterResponse.ok) {
-        const characterData = await characterResponse.json();
-        setCharacter(characterData.character);
-      }
-    } catch (err) {
-      if (!options?.silent) {
-        setError(err instanceof Error ? err.message : "Failed to load animation.");
-      }
-    } finally {
-      if (!options?.silent) {
-        setIsLoading(false);
-      }
-    }
-  }, [animationId, updateAnimationState]);
-
-  useEffect(() => {
-    void loadAnimation();
-  }, [loadAnimation]);
-
-  useEffect(() => {
-    if (!animationId || !animation || animation.status !== "generating") {
-      return;
-    }
-    const interval = setInterval(() => {
-      void loadAnimation({ silent: true });
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [animationId, animation, loadAnimation]);
+  const pushKeyframeGeneration = useCallback(
+    (frameIndex: number, generation: KeyframeGeneration) => {
+      setKeyframeGenerations((prev) => {
+        const existing = prev[frameIndex] ?? [];
+        const filtered = existing.filter(
+          (item) => item.id !== generation.id && item.image !== generation.image
+        );
+        const next = [generation, ...filtered].slice(0, 12);
+        return { ...prev, [frameIndex]: next };
+      });
+    },
+    []
+  );
 
   useEffect(() => {
     if (!animation) return;
@@ -215,21 +181,20 @@ export default function AnimationDetailPage() {
   }, [animation, character, isPromptEditing]);
 
   const handleSave = async () => {
-    if (!animation) return;
+    if (!animationId || !animation) return;
     setIsSaving(true);
     setMessage(null);
     setError(null);
     try {
-      const response = await fetch(`/api/animations/${animationId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(animation),
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Failed to save.");
-      }
-      const data = await response.json();
+      const data = await requestJson<{ animation: Animation }>(
+        `/api/animations/${animationId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(animation),
+          errorMessage: "Failed to save.",
+        }
+      );
       updateAnimationState(data.animation);
       setMessage("Saved.");
     } catch (err) {
@@ -241,10 +206,29 @@ export default function AnimationDetailPage() {
 
   const handleGenerate = async () => {
     if (!animationId || !animation) return;
+    if (generationPlan.errors.length > 0) {
+      setError(generationPlan.errors[0] ?? "Generation plan has errors.");
+      return;
+    }
+
+    const currentModel = String(animation.generationModel ?? "sora-2");
+    const providerValue = animation.generationProvider;
+    if (providerValue !== "openai" && providerValue !== "replicate") {
+      setError("Select a generation provider before starting.");
+      return;
+    }
+    const expectedProvider = allModelOptions.find(
+      (option) => option.value === currentModel
+    )?.provider;
+    if (expectedProvider && expectedProvider !== providerValue) {
+      setError(
+        `Selected provider (${providerValue}) does not match model provider (${expectedProvider}).`
+      );
+      return;
+    }
 
     // Validate size before generating
     const currentSize = String(animation.generationSize ?? "1024x1792");
-    const currentModel = String(animation.generationModel ?? "sora-2");
     const sizeValid = isSizeValidForModel(currentSize, currentModel);
     let adjustedSize: string | null = null;
     let nextAnimation = { ...animation };
@@ -255,41 +239,65 @@ export default function AnimationDetailPage() {
       setAnimation(nextAnimation);
     }
 
+    const useQueue =
+      generationPlan.mode === "segments" && generationPlan.segments.length > 0;
+    if (generationPlan.mode === "segments" && generationPlan.segments.length === 0) {
+      setError("No valid keyframe segments to generate.");
+      return;
+    }
+
     setIsGenerating(true);
     setMessage(null);
     setError(null);
     try {
       // Auto-save before generating to ensure latest settings (like description) are used
-      const saveResponse = await fetch(`/api/animations/${animationId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(nextAnimation),
-      });
-      if (!saveResponse.ok) {
-        throw new Error("Failed to auto-save settings before generation.");
-      }
-      // Update local state with saved version
-      const savedData = await saveResponse.json();
+      const savedData = await requestJson<{ animation: Animation }>(
+        `/api/animations/${animationId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nextAnimation),
+          errorMessage: "Failed to auto-save settings before generation.",
+        }
+      );
       // Since we just auto-saved, the returned animation is the clean state
       updateAnimationState(savedData.animation);
 
-      const response = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ animationId, async: true }),
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Generation failed.");
-      }
-      const data = await response.json();
+      const segmentsPayload = useQueue
+        ? generationPlan.segments.map((segment) => ({
+            id: segment.id,
+            startFrame: segment.startFrame,
+            endFrame: segment.endFrame,
+            durationSeconds: segment.durationSeconds,
+            startImageUrl: segment.startImageUrl,
+            endImageUrl: segment.endImageUrl ?? null,
+          }))
+        : undefined;
+
+      const data = await requestJson<{ animation?: Animation }>(
+        "/api/generate",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            animationId,
+            async: true,
+            segments: segmentsPayload,
+          }),
+          errorMessage: "Generation failed.",
+        }
+      );
       updateAnimationState(data.animation ?? savedData.animation);
       if (adjustedSize) {
         setMessage(
-          `Generation started. Adjusted video size to ${adjustedSize} for ${currentModel}.`
+          `${useQueue ? "Queue started" : "Generation started"}. Adjusted video size to ${adjustedSize} for ${currentModel}.`
         );
       } else {
-        setMessage("Generation started.");
+        setMessage(
+          useQueue
+            ? `Queue started (${generationPlan.segments.length} segment${generationPlan.segments.length === 1 ? "" : "s"}).`
+            : "Generation started."
+        );
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Generation failed.");
@@ -304,25 +312,56 @@ export default function AnimationDetailPage() {
     setMessage(null);
     setError(null);
     try {
-      const response = await fetch(`/api/animations/${animationId}/rebuild`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          loopMode: animation.loopMode,
-          sheetColumns: animation.sheetColumns,
-        }),
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Rebuild failed.");
-      }
-      const data = await response.json();
+      const data = await requestJson<{ animation: Animation }>(
+        `/api/animations/${animationId}/rebuild`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            loopMode: animation.loopMode,
+            sheetColumns: animation.sheetColumns,
+          }),
+          errorMessage: "Rebuild failed.",
+        }
+      );
       updateAnimationState(data.animation);
       setMessage("Spritesheet rebuilt.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Rebuild failed.");
     } finally {
       setIsRebuilding(false);
+    }
+  };
+
+  const handleRemoveSpritesheetBackground = async () => {
+    if (!animationId || !animation) return;
+    const ok = window.confirm(
+      "Apply AI background removal to the generated frames and rebuild the spritesheet? This overwrites the current frames."
+    );
+    if (!ok) return;
+    setIsRemovingBackground(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const data = await requestJson<{ animation: Animation }>(
+        `/api/animations/${animationId}/rebuild`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            loopMode: animation.loopMode,
+            sheetColumns: animation.sheetColumns,
+            applyBackgroundRemoval: true,
+          }),
+          errorMessage: "Background removal failed.",
+        }
+      );
+      updateAnimationState(data.animation);
+      setMessage("Background removed and spritesheet rebuilt.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Background removal failed.");
+    } finally {
+      setIsRemovingBackground(false);
     }
   };
 
@@ -357,17 +396,20 @@ export default function AnimationDetailPage() {
         if (data.inputPalette) {
           formData.append("inputPalette", data.inputPalette);
         }
-
-        const response = await fetch(`/api/animations/${animationId}/keyframes`, {
-          method: "POST",
-          body: formData,
-        });
-        if (!response.ok) {
-          const respData = await response.json();
-          throw new Error(respData?.error || "Keyframe update failed.");
+        if (data.referenceImages && data.referenceImages.length > 0) {
+          formData.append("referenceImages", JSON.stringify(data.referenceImages));
         }
-        const respData = await response.json();
+
+        const respData = await requestFormData<{
+          animation: Animation;
+          generation?: KeyframeGeneration;
+        }>(`/api/animations/${animationId}/keyframes`, formData, {
+          errorMessage: "Keyframe update failed.",
+        });
         updateAnimationState(respData.animation);
+        if (respData.generation) {
+          pushKeyframeGeneration(data.frameIndex, respData.generation);
+        }
         setMessage(`Keyframe updated at frame ${data.frameIndex}.`);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Keyframe update failed.");
@@ -378,20 +420,125 @@ export default function AnimationDetailPage() {
     [animationId, updateAnimationState]
   );
 
+  const saveKeyframeGeneration = useCallback(
+    async (generation: KeyframeGeneration) => {
+      if (!animationId) return;
+      if (!generation.image || !generation.id) {
+        setError("Generation data is incomplete.");
+        return;
+      }
+      setError(null);
+      setMessage(null);
+      setGenerationActionId(generation.id);
+      try {
+        const data = await requestJson<{ animation: Animation }>(
+          `/api/animations/${animationId}/keyframes/generations`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              frameIndex: currentFrame,
+              generation: { ...generation, saved: true },
+            }),
+            errorMessage: "Failed to save generation.",
+          }
+        );
+        updateAnimationState(data.animation);
+        setMessage("Generation saved.");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to save generation.");
+      } finally {
+        setGenerationActionId(null);
+      }
+    },
+    [animationId, currentFrame, updateAnimationState]
+  );
+
+  const useKeyframeGeneration = useCallback(
+    async (generation: KeyframeGeneration) => {
+      if (!animationId) return;
+      if (!generation.image) {
+        setError("Generation image is missing.");
+        return;
+      }
+      setIsKeyframeWorking(true);
+      setError(null);
+      setMessage(null);
+      try {
+        const formData = new FormData();
+        formData.append("mode", "select");
+        formData.append("frameIndex", String(currentFrame));
+        formData.append("imageUrl", generation.image);
+        if (generation.model) formData.append("model", generation.model);
+        if (generation.prompt) formData.append("prompt", generation.prompt);
+        if (generation.style) formData.append("style", generation.style);
+        if (typeof generation.strength === "number") {
+          formData.append("strength", String(generation.strength));
+        }
+        if (typeof generation.removeBg === "boolean") {
+          formData.append("removeBg", String(generation.removeBg));
+        }
+        if (typeof generation.tileX === "boolean") {
+          formData.append("tileX", String(generation.tileX));
+        }
+        if (typeof generation.tileY === "boolean") {
+          formData.append("tileY", String(generation.tileY));
+        }
+        if (typeof generation.bypassPromptExpansion === "boolean") {
+          formData.append(
+            "bypassPromptExpansion",
+            String(generation.bypassPromptExpansion)
+          );
+        }
+        if (typeof generation.seed === "number") {
+          formData.append("seed", String(generation.seed));
+        }
+        if (generation.inputPalette) {
+          formData.append("inputPalette", generation.inputPalette);
+        }
+
+        const data = await requestFormData<{ animation: Animation }>(
+          `/api/animations/${animationId}/keyframes`,
+          formData,
+          { errorMessage: "Failed to apply generation." }
+        );
+        updateAnimationState(data.animation);
+        setMessage(`Keyframe updated at frame ${currentFrame}.`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to apply generation.");
+      } finally {
+        setIsKeyframeWorking(false);
+      }
+    },
+    [animationId, currentFrame, updateAnimationState]
+  );
+
+  const downloadKeyframeGeneration = useCallback(
+    (generation: KeyframeGeneration) => {
+      if (!generation.image) {
+        setError("No generation image available to download.");
+        return;
+      }
+      const filename = generation.image.split("/").pop() ?? "";
+      const link = document.createElement("a");
+      link.href = generation.image;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    },
+    []
+  );
+
   const clearKeyframe = useCallback(
     async (frameIndex: number) => {
       setError(null);
       setMessage(null);
       try {
-        const response = await fetch(
+        const data = await requestJson<{ animation: Animation }>(
           `/api/animations/${animationId}/keyframes/${frameIndex}`,
-          { method: "DELETE" }
+          { method: "DELETE", errorMessage: "Failed to clear keyframe." }
         );
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data?.error || "Failed to clear keyframe.");
-        }
-        const data = await response.json();
         updateAnimationState(data.animation);
         setMessage(`Keyframe cleared at frame ${frameIndex}.`);
       } catch (err) {
@@ -417,6 +564,7 @@ export default function AnimationDetailPage() {
   const handleExport = async (options: {
     normalize: boolean;
     removeBackground: boolean;
+    backgroundRemovalMode: BackgroundRemovalMode;
     alphaThreshold: number;
   }) => {
     if (!animationId) return;
@@ -424,23 +572,26 @@ export default function AnimationDetailPage() {
     setMessage(null);
     setError(null);
     try {
-      const response = await fetch("/api/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          animationId,
-          normalize: options.normalize,
-          removeBackground: options.removeBackground,
-          alphaThreshold: options.alphaThreshold,
-        }),
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Export failed.");
-      }
+      await requestJson<{ animation: Animation }>(
+        "/api/export",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            animationId,
+            normalize: options.normalize,
+            removeBackground: options.removeBackground,
+            backgroundRemovalMode: options.backgroundRemovalMode,
+            alphaThreshold: options.alphaThreshold,
+          }),
+          errorMessage: "Export failed.",
+        }
+      );
       const notes = [
         options.normalize ? "normalized" : null,
-        options.removeBackground ? "background cleaned" : null,
+        options.removeBackground
+          ? `background removed (${options.backgroundRemovalMode})`
+          : null,
         options.alphaThreshold > 0 ? `alpha ${options.alphaThreshold}` : null,
       ].filter(Boolean);
       setMessage(notes.length ? `Export ready (${notes.join(", ")}).` : "Export ready.");
@@ -459,16 +610,15 @@ export default function AnimationDetailPage() {
       setError(null);
       setIsRefSaving(true);
       try {
-        const response = await fetch(`/api/animations/${animationId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ referenceImageId }),
-        });
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data?.error || "Failed to save reference selection.");
-        }
-        const data = await response.json();
+        const data = await requestJson<{ animation: Animation }>(
+          `/api/animations/${animationId}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ referenceImageId }),
+            errorMessage: "Failed to save reference selection.",
+          }
+        );
         updateAnimationState(data.animation);
       } catch (err) {
         setError(
@@ -476,6 +626,49 @@ export default function AnimationDetailPage() {
         );
       } finally {
         setIsRefSaving(false);
+      }
+    },
+    [animationId, updateAnimationState]
+  );
+
+  const handleAnimationRefUpload = useCallback(
+    async (file: File) => {
+      if (!animationId) return null;
+      try {
+        const formData = new FormData();
+        formData.append("image", file, file.name);
+        const data = await requestFormData<{
+          reference: { id: string; url: string; filename: string; createdAt: string };
+          animation: Animation;
+        }>(`/api/animations/${animationId}/references`, formData, {
+          errorMessage: "Failed to upload animation reference.",
+        });
+        updateAnimationState(data.animation);
+        return data.reference;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to upload animation reference.");
+        return null;
+      }
+    },
+    [animationId, updateAnimationState]
+  );
+
+  const handleAnimationRefDelete = useCallback(
+    async (referenceId: string) => {
+      if (!animationId) return;
+      try {
+        const data = await requestJson<{ animation: Animation }>(
+          `/api/animations/${animationId}/references`,
+          {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ referenceId }),
+            errorMessage: "Failed to delete animation reference.",
+          }
+        );
+        updateAnimationState(data.animation);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to delete animation reference.");
       }
     },
     [animationId, updateAnimationState]
@@ -489,14 +682,10 @@ export default function AnimationDetailPage() {
     setError(null);
     setIsSaving(true);
     try {
-      const response = await fetch(`/api/animations/${animationId}/keyframes/clear`, {
-        method: "POST",
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Failed to clear keyframes.");
-      }
-      const data = await response.json();
+      const data = await requestJson<{ animation: Animation }>(
+        `/api/animations/${animationId}/keyframes/clear`,
+        { method: "POST", errorMessage: "Failed to clear keyframes." }
+      );
       updateAnimationState(data.animation);
       setMessage("Cleared keyframes.");
     } catch (err) {
@@ -514,14 +703,10 @@ export default function AnimationDetailPage() {
     setError(null);
     setIsSaving(true);
     try {
-      const response = await fetch(`/api/animations/${animationId}/clear`, {
-        method: "POST",
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Failed to clear generation.");
-      }
-      const data = await response.json();
+      const data = await requestJson<{ animation: Animation }>(
+        `/api/animations/${animationId}/clear`,
+        { method: "POST", errorMessage: "Failed to clear generation." }
+      );
       updateAnimationState(data.animation);
       setMessage("Cleared generated output.");
     } catch (err) {
@@ -531,34 +716,6 @@ export default function AnimationDetailPage() {
     }
   };
 
-  const handleInterpolate = async () => {
-    if (!animationId || !animation) return;
-    const keyframeCount = animation.keyframes?.length ?? 0;
-    if (keyframeCount < 2) {
-      setError("Add at least two keyframes with images to interpolate.");
-      return;
-    }
-    setIsInterpolating(true);
-    setMessage(null);
-    setError(null);
-    try {
-      const response = await fetch(`/api/animations/${animationId}/interpolate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: interpolationModel }),
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Interpolation failed.");
-      }
-      setMessage("Interpolation complete.");
-      await loadAnimation();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Interpolation failed.");
-    } finally {
-      setIsInterpolating(false);
-    }
-  };
 
   const applyAnimationPatch = useCallback(
     async (patch: Partial<Animation>, options?: { success?: string }) => {
@@ -567,16 +724,15 @@ export default function AnimationDetailPage() {
       setMessage(null);
       setError(null);
       try {
-        const response = await fetch(`/api/animations/${animationId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(patch),
-        });
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data?.error || "Failed to update animation.");
-        }
-        const data = await response.json();
+        const data = await requestJson<{ animation: Animation }>(
+          `/api/animations/${animationId}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(patch),
+            errorMessage: "Failed to update animation.",
+          }
+        );
         updateAnimationState(data.animation);
         if (options?.success) {
           setMessage(options.success);
@@ -600,15 +756,11 @@ export default function AnimationDetailPage() {
         const formData = new FormData();
         formData.append("kind", kind);
         formData.append("image", file, file.name);
-        const response = await fetch(
+        const data = await requestFormData<{ animation: Animation }>(
           `/api/animations/${animationId}/generation-frames`,
-          { method: "POST", body: formData }
+          formData,
+          { errorMessage: "Failed to upload frame." }
         );
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data?.error || "Failed to upload frame.");
-        }
-        const data = await response.json();
         updateAnimationState(data.animation);
         setMessage(`${kind === "start" ? "Start" : "End"} frame updated.`);
       } catch (err) {
@@ -633,201 +785,43 @@ export default function AnimationDetailPage() {
     [applyAnimationPatch]
   );
 
-  const handleImportVideo = async () => {
-    if (!animationId || !importFile) return;
-    const ok = window.confirm(
-      "Import this video? This will replace generated frames, spritesheet, and exports."
-    );
-    if (!ok) return;
-    setIsImporting(true);
-    setMessage(null);
-    setError(null);
-    try {
-      const formData = new FormData();
-      formData.append("video", importFile, importFile.name);
-      if (importSkipRoi) {
-        formData.append("skipRoi", "true");
-      }
-
-      const response = await fetch(`/api/animations/${animationId}/import-video`, {
-        method: "POST",
-        body: formData,
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Import failed.");
-      }
-      const data = await response.json();
-      updateAnimationState(data.animation);
-      setImportFile(null);
-      setImportVideoMeta(null);
-      setMessage("Video imported.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed.");
-    } finally {
-      setIsImporting(false);
-    }
-  };
-
-  const handleImportFileSelect = useCallback((file: File | null) => {
-    setImportFile(file);
-    setImportVideoMeta(null);
-    if (!file) return;
-
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.onloadedmetadata = () => {
-      setImportVideoMeta({
-        duration: video.duration,
-        width: video.videoWidth,
-        height: video.videoHeight,
-      });
-      URL.revokeObjectURL(video.src);
-    };
-    video.src = URL.createObjectURL(file);
-  }, []);
-
-  const handleImportDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setImportDragOver(false);
-      const file = e.dataTransfer.files[0];
-      if (file?.type === "video/mp4") {
-        handleImportFileSelect(file);
-      }
-    },
-    [handleImportFileSelect]
-  );
-
-  const handleImportDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setImportDragOver(true);
-  }, []);
-
-  const handleImportDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setImportDragOver(false);
-  }, []);
-
-  const formatVersionTimestamp = (value?: string) => {
-    if (!value) return "";
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return value;
-    return parsed.toLocaleString();
-  };
-
-  const handleCreateVersion = async () => {
-    if (!animationId) return;
-    setIsVersionWorking(true);
-    setMessage(null);
-    setError(null);
-    try {
-      const response = await fetch(`/api/animations/${animationId}/versions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: versionName.trim() || undefined,
-        }),
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Failed to create version.");
-      }
-      const data = await response.json();
-      updateAnimationState(data.animation);
-      setVersionName("");
-      setMessage(`Version saved (${data.version?.name ?? "new version"}).`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create version.");
-    } finally {
-      setIsVersionWorking(false);
-    }
-  };
-
-  const handleSaveVersion = async (versionId: string) => {
-    if (!animationId) return;
-    const ok = window.confirm("Overwrite this version with the current state?");
-    if (!ok) return;
-    setIsVersionWorking(true);
-    setMessage(null);
-    setError(null);
-    try {
-      const response = await fetch(`/api/animations/${animationId}/versions/${versionId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Failed to save version.");
-      }
-      const data = await response.json();
-      updateAnimationState(data.animation);
-      setMessage(`Version updated (${data.version?.name ?? "version"}).`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save version.");
-    } finally {
-      setIsVersionWorking(false);
-    }
-  };
-
-  const handleLoadVersion = async (versionId: string) => {
-    if (!animationId) return;
-    const ok = window.confirm(
-      "Load this version? Current keyframes and generated output will be replaced."
-    );
-    if (!ok) return;
-    setIsVersionWorking(true);
-    setMessage(null);
-    setError(null);
-    try {
-      const response = await fetch(
-        `/api/animations/${animationId}/versions/${versionId}/load`,
-        { method: "POST" }
-      );
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Failed to load version.");
-      }
-      const data = await response.json();
-      updateAnimationState(data.animation);
-      setMessage("Version loaded.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load version.");
-    } finally {
-      setIsVersionWorking(false);
-    }
-  };
-
-  const handleDeleteVersion = async (versionId: string) => {
-    if (!animationId) return;
-    const ok = window.confirm("Delete this version? This cannot be undone.");
-    if (!ok) return;
-    setIsVersionWorking(true);
-    setMessage(null);
-    setError(null);
-    try {
-      const response = await fetch(`/api/animations/${animationId}/versions/${versionId}`, {
-        method: "DELETE",
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data?.error || "Failed to delete version.");
-      }
-      const data = await response.json();
-      updateAnimationState(data.animation);
-      setMessage("Version deleted.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete version.");
-    } finally {
-      setIsVersionWorking(false);
-    }
-  };
-
   const hasChanges = useMemo(() => {
     if (!animation || !savedAnimation) return false;
     return JSON.stringify(animation) !== JSON.stringify(savedAnimation);
   }, [animation, savedAnimation]);
+
+  const generationModel = String(animation?.generationModel ?? "sora-2");
+  const expectedFrameCount = getExpectedFrameCount(
+    Number(animation?.generationSeconds ?? 4),
+    Number(animation?.extractFps ?? animation?.fps ?? 12)
+  );
+  const durationOptions = getVideoSecondsOptions(generationModel);
+  const supportsStartEnd = getVideoModelSupportsStartEnd(generationModel);
+  const supportsLoop = getVideoModelSupportsLoop(generationModel);
+  const supportsContinuation = getVideoModelSupportsContinuation(generationModel);
+  const supportsNegativePrompt = getVideoModelSupportsNegativePrompt(generationModel);
+  const continuationEnabled =
+    process.env.NEXT_PUBLIC_VEO_CONTINUATION_ENABLED === "true";
+  const isToonCrafter = generationModel === "tooncrafter";
+  const generationNegativePrompt =
+    typeof animation?.generationNegativePrompt === "string"
+      ? animation.generationNegativePrompt
+      : "";
+  const activeReference =
+    character?.referenceImages?.find((img) => img.id === animation?.referenceImageId) ??
+    character?.referenceImages?.find((img) => img.isPrimary) ??
+    character?.referenceImages?.[0] ??
+    null;
+  const generationPlan = useGenerationPlan({
+    animation,
+    expectedFrameCount,
+    activeReferenceUrl: activeReference?.url ?? null,
+    supportsStartEnd,
+    durationOptions,
+    isToonCrafter,
+    supportsContinuation,
+    continuationEnabled,
+  });
 
   if (isLoading) {
     return (
@@ -845,10 +839,6 @@ export default function AnimationDetailPage() {
     );
   }
 
-  const expectedFrameCount = getExpectedFrameCount(
-    Number(animation.generationSeconds ?? 4),
-    Number(animation.extractFps ?? animation.fps ?? 6)
-  );
   const displayFrameWidth = Number(animation.frameWidth ?? animation.spriteSize ?? 0);
   const displayFrameHeight = Number(animation.frameHeight ?? animation.spriteSize ?? 0);
   const loopedFrameCount =
@@ -864,19 +854,14 @@ export default function AnimationDetailPage() {
   const safeResolvedFrameCount = Math.max(1, resolvedFrameCount);
   const sizeValid = isSizeValidForModel(
     String(animation.generationSize ?? "1024x1792"),
-    String(animation.generationModel ?? "sora-2")
+    generationModel
   );
-  const durationOptions = getVideoSecondsOptions(
-    String(animation.generationModel ?? "sora-2")
-  );
-  const supportsStartEnd = getVideoModelSupportsStartEnd(
-    String(animation.generationModel ?? "sora-2")
-  );
-  const supportsLoop = getVideoModelSupportsLoop(
-    String(animation.generationModel ?? "sora-2")
-  );
-  const isToonCrafter =
-    String(animation.generationModel ?? "sora-2") === "tooncrafter";
+  const modelProvider = allModelOptions.find(
+    (option) => option.value === generationModel
+  )?.provider;
+  const providerValid = selectedProvider !== "";
+  const providerMatchesModel =
+    providerValid && Boolean(modelProvider) && modelProvider === selectedProvider;
   const generationLoop = Boolean(animation.generationLoop);
   const tooncrafterInterpolate = animation.tooncrafterInterpolate === true;
   const tooncrafterColorCorrection =
@@ -884,9 +869,14 @@ export default function AnimationDetailPage() {
       ? animation.tooncrafterColorCorrection
       : true;
   const tooncrafterSeed = animation.tooncrafterSeed ?? "";
+  const tooncrafterNegativePrompt =
+    typeof animation.tooncrafterNegativePrompt === "string"
+      ? animation.tooncrafterNegativePrompt
+      : "";
+  const tooncrafterEmptyPrompt = animation.tooncrafterEmptyPrompt === true;
   const promptProfile =
     animation.promptProfile ??
-    getVideoModelPromptProfile(String(animation.generationModel ?? "sora-2"));
+    getVideoModelPromptProfile(generationModel);
   const autoPromptConcise = buildVideoPrompt({
     description: String(animation.description ?? ""),
     style: String(animation.style ?? ""),
@@ -905,7 +895,10 @@ export default function AnimationDetailPage() {
     animation.promptConcise?.trim() ? animation.promptConcise : autoPromptConcise;
   const effectivePromptVerbose =
     animation.promptVerbose?.trim() ? animation.promptVerbose : autoPromptVerbose;
-  const promptPreview = isPromptEditing
+  const usesEmptyPrompt = isToonCrafter && tooncrafterEmptyPrompt;
+  const promptPreview = usesEmptyPrompt
+    ? "Empty prompt enabled."
+    : isPromptEditing
     ? promptProfile === "concise"
       ? draftPromptConcise
       : draftPromptVerbose
@@ -913,20 +906,34 @@ export default function AnimationDetailPage() {
     ? effectivePromptConcise
     : effectivePromptVerbose;
 
-  const activeReference =
-    character?.referenceImages?.find((img) => img.id === animation.referenceImageId) ??
-    character?.referenceImages?.find((img) => img.isPrimary) ??
-    character?.referenceImages?.[0] ??
-    null;
+  const canGenerate =
+    sizeValid && providerMatchesModel && generationPlan.errors.length === 0;
   const generationInProgress = animation.status === "generating";
+  const queueProgressPercent = (() => {
+    const queue = Array.isArray(animation.generationQueue)
+      ? animation.generationQueue
+      : [];
+    if (queue.length === 0) return null;
+    const completed = queue.filter((item) => item.status === "completed").length;
+    const inProgress = queue.find((item) => item.status === "in_progress");
+    const inProgressPct =
+      typeof inProgress?.progress === "number" ? inProgress.progress : 0;
+    const percent = Math.round(
+      ((completed + inProgressPct / 100) / queue.length) * 100
+    );
+    return Number.isFinite(percent) ? percent : null;
+  })();
   const progressValue = animation.generationJob?.progress;
-  const progressPercent =
+  const progressPercentFromJob =
     typeof progressValue === "number"
       ? Math.round(progressValue > 1 ? progressValue : progressValue * 100)
       : null;
-  const canRebuild =
-    (animation.generatedFrames?.length ?? 0) > 0 &&
-    animation.status === "complete";
+  const progressPercent = queueProgressPercent ?? progressPercentFromJob;
+  const hasGeneratedFrames = (animation.generatedFrames?.length ?? 0) > 0;
+  const canRebuild = hasGeneratedFrames;
+  const generationQueue = Array.isArray(animation.generationQueue)
+    ? animation.generationQueue
+    : [];
   const versions = animation.versions ?? [];
   const activeVersionId = animation.activeVersionId ?? null;
   
@@ -934,7 +941,13 @@ export default function AnimationDetailPage() {
 
   return (
     <div className="min-h-screen grid-bg">
-      <Header backHref="/animations" breadcrumb={`animations : ${animation.name}`}>
+      <Header
+        breadcrumb={[
+          { label: "Dashboard", href: "/" },
+          { label: "Animations", href: "/animations" },
+          { label: animation.name },
+        ]}
+      >
         <Button
           onClick={handleSave}
           disabled={isSaving || !hasChanges}
@@ -953,7 +966,7 @@ export default function AnimationDetailPage() {
         </Button>
         <Button
           onClick={handleRebuildSpritesheet}
-          disabled={!canRebuild || isRebuilding || generationInProgress}
+          disabled={!canRebuild || isRebuilding || isRemovingBackground || generationInProgress}
           variant="outline"
           className="h-7 px-3 text-[10px] tracking-wider border-border hover:border-primary hover:text-primary"
           title="Rebuild spritesheet from extracted frames using current loop mode"
@@ -970,7 +983,7 @@ export default function AnimationDetailPage() {
         </Button>
         <Button
           onClick={handleGenerate}
-          disabled={isGenerating || generationInProgress || !sizeValid}
+          disabled={isGenerating || generationInProgress || !canGenerate}
           className="bg-primary hover:bg-primary/80 text-primary-foreground h-7 px-3 text-[10px] tracking-wider"
           title="Uses the selected reference image"
         >
@@ -1057,8 +1070,16 @@ export default function AnimationDetailPage() {
             <section className="tech-border bg-card">
               <div className="px-4 py-3 border-b border-border flex items-center justify-between">
                 <span className="text-xs text-muted-foreground tracking-wider">GENERATION DETAILS</span>
-                <span className="text-[10px] text-muted-foreground">
-                  {animation.generationProvider === "openai" ? "OpenAI" : "Replicate"}
+                <span
+                  className={`text-[10px] ${
+                    providerMatchesModel ? "text-muted-foreground" : "text-destructive"
+                  }`}
+                >
+                  {providerValid
+                    ? selectedProvider === "openai"
+                      ? "OpenAI"
+                      : "Replicate"
+                    : "Provider required"}
                 </span>
               </div>
               <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
@@ -1134,13 +1155,6 @@ export default function AnimationDetailPage() {
                 onKeyframeAction={handleTimelineKeyframeAction}
               />
 
-              {/* Frame Strip Gallery */}
-              <FrameStrip
-                animation={animation}
-                currentFrame={currentFrame}
-                onFrameChange={handleFrameChange}
-              />
-
               <section className="grid lg:grid-cols-[1fr,380px] gap-6">
                 {/* Left: Frame Preview & Spritesheet */}
                 <div className="space-y-6">
@@ -1148,23 +1162,42 @@ export default function AnimationDetailPage() {
                     animation={animation}
                     currentFrame={currentFrame}
                     showComparison={true}
+                    referenceImageUrl={activeReference?.url ?? null}
                   />
 
                   {animation.generatedSpritesheet && (
                     <div className="tech-border bg-card">
-                      <button
-                        onClick={() => {
-                          const next = !spritesheetExpanded;
-                          setSpritesheetExpanded(next);
-                          localStorage.setItem("spritesheet-panel-expanded", String(next));
-                        }}
-                        className="w-full px-4 py-3 border-b border-border flex items-center justify-between hover:bg-muted/30 transition-colors"
-                      >
+                      <div className="w-full px-4 py-3 border-b border-border flex items-center justify-between">
                         <span className="text-xs text-muted-foreground tracking-wider">GENERATED SPRITESHEET</span>
-                        <span className="text-xs text-muted-foreground">
-                          {spritesheetExpanded ? "−" : "+"}
-                        </span>
-                      </button>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            onClick={handleRemoveSpritesheetBackground}
+                            disabled={
+                              !canRebuild ||
+                              isRebuilding ||
+                              isRemovingBackground ||
+                              generationInProgress
+                            }
+                            variant="outline"
+                            className="h-7 px-3 text-[10px] tracking-wider border-border hover:border-primary hover:text-primary"
+                          >
+                            {isRemovingBackground ? "REMOVING BG" : "REMOVE BG"}
+                          </Button>
+                          <button
+                            onClick={() => {
+                              const next = !spritesheetExpanded;
+                              setSpritesheetExpanded(next);
+                              localStorage.setItem("spritesheet-panel-expanded", String(next));
+                            }}
+                            className="h-7 w-7 text-xs text-muted-foreground border border-border hover:border-primary hover:text-primary transition-colors"
+                            aria-label={
+                              spritesheetExpanded ? "Collapse spritesheet" : "Expand spritesheet"
+                            }
+                          >
+                            {spritesheetExpanded ? "−" : "+"}
+                          </button>
+                        </div>
+                      </div>
                       {spritesheetExpanded && (
                         <div className="p-4">
                           <div className="overflow-auto border border-border">
@@ -1174,6 +1207,9 @@ export default function AnimationDetailPage() {
                               className="max-w-full"
                               style={{ imageRendering: "pixelated" }}
                             />
+                          </div>
+                          <div className="mt-3 text-[10px] text-muted-foreground">
+                            Applies AI background removal to frames and rebuilds the sheet.
                           </div>
                         </div>
                       )}
@@ -1196,220 +1232,39 @@ export default function AnimationDetailPage() {
                       void saveReferenceSelection(referenceImageId);
                     }}
                     isWorking={isKeyframeWorking}
+                    generationHistory={recentGenerations}
+                    savedGenerations={savedGenerations}
+                    onGenerationSave={saveKeyframeGeneration}
+                    onGenerationUse={useKeyframeGeneration}
+                    onGenerationDownload={downloadKeyframeGeneration}
+                    generationActionId={generationActionId}
+                    onAnimationRefUpload={handleAnimationRefUpload}
+                    onAnimationRefDelete={handleAnimationRefDelete}
                   />
 
-                  {/* Import Video Panel */}
-                  <div className="tech-border bg-card">
-                    <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground tracking-wider">IMPORT VIDEO</span>
-                      <div className="flex gap-2 text-[10px]">
-                        <a
-                          href="https://sora.com"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline"
-                        >
-                          sora
-                        </a>
-                        <span className="text-muted-foreground">·</span>
-                        <a
-                          href="https://aistudio.google.com"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline"
-                        >
-                          gemini
-                        </a>
-                      </div>
-                    </div>
-                    <div className="p-4 space-y-3">
-                      {/* Drop zone */}
-                      <div
-                        className={cn(
-                          "drop-zone p-4 cursor-pointer transition-all duration-150",
-                          importDragOver && "drag-over",
-                          isImporting && "opacity-50 pointer-events-none"
-                        )}
-                        onDrop={handleImportDrop}
-                        onDragOver={handleImportDragOver}
-                        onDragLeave={handleImportDragLeave}
-                        onClick={() => document.getElementById("import-video-input")?.click()}
-                      >
-                        <input
-                          id="import-video-input"
-                          type="file"
-                          accept="video/mp4"
-                          className="hidden"
-                          onChange={(e) => handleImportFileSelect(e.target.files?.[0] ?? null)}
-                          disabled={isImporting}
-                        />
-                        <div className="text-center space-y-2">
-                          <div className="w-10 h-10 mx-auto border border-border flex items-center justify-center">
-                            <CloudUpload className="w-5 h-5 text-primary" strokeWidth={1.5} />
-                          </div>
-                          <div className="space-y-0.5">
-                            <p className="text-xs text-foreground">Drop MP4 here</p>
-                            <p className="text-[10px] text-muted-foreground">or click to browse</p>
-                          </div>
-                        </div>
-                      </div>
+                  <ImportPanel
+                    animationId={animationId}
+                    animation={animation}
+                    onAnimationUpdate={updateAnimationState}
+                    onMessage={setMessage}
+                    onError={setError}
+                  />
 
-                      {/* Video info after selection */}
-                      {importFile && (
-                        <div className="border border-border p-3 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <p className="text-xs font-medium truncate flex-1 mr-2">{importFile.name}</p>
-                            <button
-                              onClick={() => {
-                                setImportFile(null);
-                                setImportVideoMeta(null);
-                              }}
-                              className="text-[10px] text-muted-foreground hover:text-destructive"
-                            >
-                              CLEAR
-                            </button>
-                          </div>
-                          {importVideoMeta && (
-                            <div className="flex gap-3 text-[10px] text-muted-foreground">
-                              <span>{importVideoMeta.duration.toFixed(1)}s</span>
-                              <span>{importVideoMeta.width}×{importVideoMeta.height}</span>
-                              <span>~{Math.ceil(importVideoMeta.duration * Number(animation.extractFps ?? animation.fps ?? 6))} frames</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Current settings display */}
-                      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
-                        <span>FPS: {animation.extractFps ?? animation.fps ?? 6}</span>
-                        <span>Loop: {animation.loopMode ?? "pingpong"}</span>
-                        <span>Size: {displayFrameWidth}×{displayFrameHeight}</span>
-                      </div>
-
-                      {/* Skip ROI option */}
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={importSkipRoi}
-                          onChange={(e) => setImportSkipRoi(e.target.checked)}
-                          className="w-3.5 h-3.5 accent-primary"
-                        />
-                        <span className="text-[10px] text-muted-foreground">
-                          Use full frame (skip ROI crop)
-                        </span>
-                      </label>
-
-                      {/* Import button */}
-                      <Button
-                        onClick={handleImportVideo}
-                        disabled={!importFile || isImporting}
-                        className="w-full h-9 bg-primary hover:bg-primary/80 text-primary-foreground text-[10px] tracking-wider"
-                      >
-                        {isImporting ? "IMPORTING..." : "IMPORT MP4"}
-                      </Button>
-
-                      <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
-                        Generate with Sora or Gemini, download, and import here. Aspect ratio is
-                        preserved; video is centered with transparent padding if needed.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Version Manager */}
-                  <div className="tech-border bg-card">
-                    <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground tracking-wider">VERSIONS</span>
-                      <span className="text-[10px] text-muted-foreground">{versions.length} SAVES</span>
-                    </div>
-                    <div className="p-4 space-y-3">
-                      <div className="flex gap-2">
-                        <input
-                          value={versionName}
-                          onChange={(event) => setVersionName(event.target.value)}
-                          placeholder="Version name (optional)"
-                          className="terminal-input w-full h-9 px-3 text-sm bg-card"
-                        />
-                        <Button
-                          onClick={handleCreateVersion}
-                          disabled={isVersionWorking}
-                          className="h-9 px-3 bg-primary hover:bg-primary/80 text-primary-foreground text-[10px] tracking-wider"
-                        >
-                          {isVersionWorking ? "SAVING" : "ADD"}
-                        </Button>
-                      </div>
-                      {versions.length === 0 ? (
-                        <p className="text-[10px] text-muted-foreground">
-                          No versions saved yet. Creating a version snapshots keyframes and generated output.
-                        </p>
-                      ) : (
-                        <div className="space-y-2">
-                          {[...versions]
-                            .sort((a, b) => {
-                              const aTime = new Date(a.updatedAt ?? a.createdAt).getTime();
-                              const bTime = new Date(b.updatedAt ?? b.createdAt).getTime();
-                              return bTime - aTime;
-                            })
-                            .map((version) => {
-                              const isActive = activeVersionId === version.id;
-                              const label = version.updatedAt
-                                ? `Updated ${formatVersionTimestamp(version.updatedAt)}`
-                                : `Created ${formatVersionTimestamp(version.createdAt)}`;
-                              return (
-                                <div
-                                  key={version.id}
-                                  className={`border p-3 flex items-center justify-between gap-3 ${
-                                    isActive ? "border-primary/70 bg-primary/5" : "border-border"
-                                  }`}
-                                >
-                                  <div>
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs font-medium">{version.name}</span>
-                                      {isActive && (
-                                        <span className="text-[9px] px-1.5 py-0.5 border border-primary text-primary">
-                                          ACTIVE
-                                        </span>
-                                      )}
-                                      {version.source === "generation" && (
-                                        <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted-foreground">
-                                          AUTO
-                                        </span>
-                                      )}
-                                    </div>
-                                    <p className="text-[10px] text-muted-foreground">{label}</p>
-                                  </div>
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      onClick={() => handleLoadVersion(version.id)}
-                                      className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary"
-                                      disabled={isVersionWorking}
-                                    >
-                                      LOAD
-                                    </button>
-                                    <button
-                                      onClick={() => handleSaveVersion(version.id)}
-                                      className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary"
-                                      disabled={isVersionWorking}
-                                    >
-                                      SAVE
-                                    </button>
-                                    <button
-                                      onClick={() => handleDeleteVersion(version.id)}
-                                      className="px-2 py-1 text-[10px] border border-destructive/60 text-destructive hover:border-destructive"
-                                      disabled={isVersionWorking}
-                                    >
-                                      DEL
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  <VersionManager
+                    animationId={animationId}
+                    versions={versions}
+                    activeVersionId={activeVersionId}
+                    onAnimationUpdate={updateAnimationState}
+                    onMessage={setMessage}
+                    onError={setError}
+                  />
 
                   {/* Export Panel */}
-                  <ExportPanel animation={animation} onExport={handleExport} isExporting={isExporting} />
+                  <ExportPanel
+                    animation={animation}
+                    onExport={handleExport}
+                    isExporting={isExporting}
+                  />
                 </div>
               </section>
             </>
@@ -1555,25 +1410,70 @@ export default function AnimationDetailPage() {
                   </div>
                 </div>
               </div>
+              {supportsNegativePrompt && !isToonCrafter && (
+                <div className="tech-border bg-card p-4 space-y-2">
+                  <p className="text-xs text-muted-foreground tracking-widest">
+                    Negative Prompt
+                  </p>
+                  <textarea
+                    value={generationNegativePrompt}
+                    onChange={(event) => {
+                      const raw = event.target.value;
+                      setAnimation({
+                        ...animation,
+                        generationNegativePrompt: raw.trim() ? raw : null,
+                      });
+                    }}
+                    rows={3}
+                    placeholder="Optional: avoid artifacts, extra limbs, blur..."
+                    className="terminal-input w-full p-3 text-xs bg-card resize-none"
+                    disabled={isGenerationFrameSaving}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Optional. Sent as negative_prompt for supported models.
+                  </p>
+                </div>
+              )}
               <div className="tech-border bg-card p-4 space-y-2">
-                <p className="text-xs text-muted-foreground tracking-widest">Video Model</p>
+                <p className="text-xs text-muted-foreground tracking-widest">Provider</p>
                 <select
-                  value={animation.generationModel ?? "sora-2"}
+                  value={selectedProvider}
                   onChange={(event) => {
-                    const nextModel = event.target.value;
+                    if (!animation) return;
+                    const rawProvider = event.target.value;
+                    const provider =
+                      rawProvider === "openai" || rawProvider === "replicate"
+                        ? rawProvider
+                        : undefined;
+                    if (!provider) {
+                      setAnimation({ ...animation, generationProvider: undefined });
+                      return;
+                    }
+
+                    const currentModel = String(animation.generationModel ?? "sora-2");
+                    const providerModels = allModelOptions.filter(
+                      (option) => option.provider === provider
+                    );
+                    const nextModel = providerModels.some(
+                      (option) => option.value === currentModel
+                    )
+                      ? currentModel
+                      : providerModels[0]?.value ?? currentModel;
+
                     const currentSize = String(animation.generationSize ?? "1024x1792");
                     const nextSize = isSizeValidForModel(currentSize, nextModel)
                       ? currentSize
                       : coerceVideoSizeForModel(currentSize, nextModel);
                     const currentSeconds = Number(animation.generationSeconds ?? 4);
                     const nextSeconds = coerceVideoSecondsForModel(currentSeconds, nextModel);
-                    const fpsValue = Number(animation.extractFps ?? animation.fps ?? 6);
+                    const fpsValue = Number(animation.extractFps ?? animation.fps ?? 12);
                     const frameCount = getExpectedFrameCount(nextSeconds, fpsValue);
                     const nextPromptProfile =
                       animation.promptProfile ?? getVideoModelPromptProfile(nextModel);
+
                     setAnimation({
                       ...animation,
-                      generationProvider: getVideoProviderForModel(nextModel),
+                      generationProvider: provider,
                       generationModel: nextModel,
                       generationSize: nextSize,
                       generationSeconds: nextSeconds,
@@ -1583,16 +1483,68 @@ export default function AnimationDetailPage() {
                   }}
                   className="terminal-input w-full h-9 px-3 text-sm bg-card"
                 >
-                  {modelOptions.map((option) => (
+                  <option value="">Select provider</option>
+                  {PROVIDER_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
                   ))}
                 </select>
+                {!providerValid && (
+                  <p className="text-[10px] text-destructive">
+                    Provider selection is required before generating.
+                  </p>
+                )}
+              </div>
+
+              <div className="tech-border bg-card p-4 space-y-2">
+                <p className="text-xs text-muted-foreground tracking-widest">Video Model</p>
+                <select
+                  value={animation.generationModel ?? "sora-2"}
+                  onChange={(event) => {
+                    if (!animation) return;
+                    const nextModel = event.target.value;
+                    const currentSize = String(animation.generationSize ?? "1024x1792");
+                    const nextSize = isSizeValidForModel(currentSize, nextModel)
+                      ? currentSize
+                      : coerceVideoSizeForModel(currentSize, nextModel);
+                    const currentSeconds = Number(animation.generationSeconds ?? 4);
+                    const nextSeconds = coerceVideoSecondsForModel(currentSeconds, nextModel);
+                    const fpsValue = Number(animation.extractFps ?? animation.fps ?? 12);
+                    const frameCount = getExpectedFrameCount(nextSeconds, fpsValue);
+                    const nextPromptProfile =
+                      animation.promptProfile ?? getVideoModelPromptProfile(nextModel);
+                    setAnimation({
+                      ...animation,
+                      generationModel: nextModel,
+                      generationSize: nextSize,
+                      generationSeconds: nextSeconds,
+                      promptProfile: nextPromptProfile,
+                      frameCount,
+                    });
+                  }}
+                  className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                  disabled={!providerValid}
+                >
+                  {modelOptions.length === 0 ? (
+                    <option value="">Select provider to view models</option>
+                  ) : (
+                    modelOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))
+                  )}
+                </select>
+                {!providerMatchesModel && providerValid && (
+                  <p className="text-[10px] text-destructive">
+                    Provider does not match the selected model.
+                  </p>
+                )}
                 {isToonCrafter && (
                   <p className="text-[10px] text-muted-foreground">
                     Uses 2-10 keyframes to generate a full video, then extracts sprite frames.
-                    If you provide more than 10, we sample evenly. "Native" size uses your
+                    If you provide more than 10, we sample evenly. &quot;Native&quot; size uses your
                     keyframe dimensions.
                   </p>
                 )}
@@ -1627,7 +1579,7 @@ export default function AnimationDetailPage() {
                     <button
                       key={value}
                       onClick={() => {
-                        const fpsValue = Number(animation.extractFps ?? animation.fps ?? 6);
+                        const fpsValue = Number(animation.extractFps ?? animation.fps ?? 12);
                         const frameCount = getExpectedFrameCount(value, fpsValue);
                         setAnimation({
                           ...animation,
@@ -1723,6 +1675,43 @@ export default function AnimationDetailPage() {
                       Leave blank for random.
                     </p>
                   </div>
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-muted-foreground tracking-widest">
+                      Negative Prompt
+                    </p>
+                    <textarea
+                      value={tooncrafterNegativePrompt}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setAnimation({
+                          ...animation,
+                          tooncrafterNegativePrompt: raw.trim() ? raw : null,
+                        });
+                      }}
+                      rows={3}
+                      placeholder="Optional: avoid artifacts, extra limbs, blur..."
+                      className="terminal-input w-full p-3 text-xs bg-card resize-none"
+                      disabled={isGenerationFrameSaving}
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Optional. Leave blank to skip.
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={tooncrafterEmptyPrompt}
+                      onChange={(e) =>
+                        setAnimation({
+                          ...animation,
+                          tooncrafterEmptyPrompt: e.target.checked,
+                        })
+                      }
+                      className="form-checkbox"
+                      disabled={isGenerationFrameSaving}
+                    />
+                    Send empty prompt (ignore auto + overrides)
+                  </label>
                 </div>
               )}
 
@@ -1916,7 +1905,7 @@ export default function AnimationDetailPage() {
                         });
                       }}
                       className={`px-3 py-1 text-xs border ${
-                        Number(animation.extractFps ?? animation.fps ?? 6) === value
+                        Number(animation.extractFps ?? animation.fps ?? 12) === value
                           ? "border-primary text-primary"
                           : "border-border text-muted-foreground hover:border-primary/50"
                       }`}
@@ -1927,7 +1916,7 @@ export default function AnimationDetailPage() {
                 </div>
                 <p className="text-[10px] text-muted-foreground">
                   Frame duration:{" "}
-                  {Math.round(1000 / Number(animation.extractFps ?? animation.fps ?? 6))}ms
+                  {Math.round(1000 / Number(animation.extractFps ?? animation.fps ?? 12))}ms
                 </p>
               </div>
 
@@ -1949,7 +1938,9 @@ export default function AnimationDetailPage() {
                           : "border-border text-muted-foreground hover:border-primary/50"
                       }`}
                     >
-                      {mode === "pingpong" ? "Ping-pong (safe loop)" : "Loop (start/end match)"}
+                      {mode === "pingpong"
+                        ? "Ping-pong (safe loop)"
+                        : "Loop (end frame = start frame)"}
                     </button>
                   ))}
                 </div>
@@ -2068,7 +2059,11 @@ export default function AnimationDetailPage() {
                 </div>
                 <p className="text-2xl font-bold metric-value">{expectedFrameCount}</p>
                 <p className="text-[10px] text-muted-foreground leading-relaxed">
-                  Base frames come from {animation.generationSeconds ?? 4}s × {animation.extractFps ?? animation.fps ?? 6}fps. Ping-pong output: {loopedFrameCount} frames.
+                  Base frames come from {animation.generationSeconds ?? 4}s ×{" "}
+                  {animation.extractFps ?? animation.fps ?? 12}fps.{" "}
+                  {String(animation.loopMode ?? "loop") === "pingpong"
+                    ? `Ping-pong output: ${loopedFrameCount} frames.`
+                    : `Loop output: ${loopedFrameCount} frames (end frame = start frame).`}
                 </p>
               </div>
 
@@ -2102,6 +2097,110 @@ export default function AnimationDetailPage() {
                   </>
                 ) : (
                   <p className="text-xs text-muted-foreground">No keyframes defined. Use the Timeline Editor to add keyframes.</p>
+                )}
+              </div>
+
+              {/* Generation queue */}
+              <div className="tech-border bg-card p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground tracking-widest">Generation Queue</p>
+                  <span className="text-[10px] text-muted-foreground">
+                    {generationQueue.length
+                      ? `${generationQueue.length} segment${generationQueue.length === 1 ? "" : "s"}`
+                      : "Idle"}
+                  </span>
+                </div>
+                {generationQueue.length > 0 ? (
+                  <div className="space-y-2">
+                    {generationQueue.map((item, index) => (
+                      <div
+                        key={item.id}
+                        className="border border-border/60 bg-background/40 p-2 text-[10px] space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">
+                            Segment {index + 1}
+                          </span>
+                          <span
+                            className={
+                              item.status === "completed"
+                                ? "text-success"
+                                : item.status === "failed"
+                                ? "text-destructive"
+                                : item.status === "in_progress"
+                                ? "text-warning"
+                                : "text-muted-foreground"
+                            }
+                          >
+                            {item.status.replace("_", " ")}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <span className="text-muted-foreground">Frames</span>{" "}
+                            {item.startFrame}-{item.endFrame} ({item.targetFrameCount})
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Duration</span>{" "}
+                            {item.durationSeconds}s
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Model</span>{" "}
+                            {getVideoModelLabel(item.model)}
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Provider</span>{" "}
+                            {item.provider}
+                          </div>
+                        </div>
+                        {(item.startImageUrl || item.endImageUrl) && (
+                          <div className="flex gap-3">
+                            {item.startImageUrl && (
+                              <div className="space-y-1">
+                                <p className="text-[9px] text-muted-foreground">Start</p>
+                                <img
+                                  src={item.startImageUrl}
+                                  alt="Start frame"
+                                  className="w-12 h-12 object-contain border border-border bg-muted/20"
+                                />
+                              </div>
+                            )}
+                            {item.endImageUrl && (
+                              <div className="space-y-1">
+                                <p className="text-[9px] text-muted-foreground">End</p>
+                                <img
+                                  src={item.endImageUrl}
+                                  alt="End frame"
+                                  className="w-12 h-12 object-contain border border-border bg-muted/20"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {item.error && (
+                          <p className="text-[10px] text-destructive">{item.error}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No queued segments. Add keyframes to generate in chunks.
+                  </p>
+                )}
+                {generationPlan.errors.length > 0 && (
+                  <div className="border border-destructive/40 bg-destructive/5 p-2 text-[10px] text-destructive space-y-1">
+                    {generationPlan.errors.map((err) => (
+                      <p key={err}>{err}</p>
+                    ))}
+                  </div>
+                )}
+                {generationPlan.warnings.length > 0 && (
+                  <div className="border border-border bg-muted/20 p-2 text-[10px] text-warning space-y-1">
+                    {generationPlan.warnings.map((warning) => (
+                      <p key={warning}>{warning}</p>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>

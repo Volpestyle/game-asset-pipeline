@@ -6,7 +6,7 @@ import {
   getVideoModelLabel,
 } from "@/lib/ai/soraConstraints";
 
-export const EXTRACT_FPS_OPTIONS = [6, 8, 12];
+export const EXTRACT_FPS_OPTIONS = [6, 8, 12, 24];
 
 export type LoopMode = "loop" | "pingpong";
 

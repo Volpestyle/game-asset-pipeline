@@ -2,13 +2,19 @@
 
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import type { Animation, ProjectSettings, AnchorPoint } from "@/types";
+import type {
+  Animation,
+  ProjectSettings,
+  AnchorPoint,
+  BackgroundRemovalMode,
+} from "@/types";
 
 interface ExportPanelProps {
   animation: Animation;
   onExport: (options: {
     normalize: boolean;
     removeBackground: boolean;
+    backgroundRemovalMode: BackgroundRemovalMode;
     alphaThreshold: number;
   }) => Promise<void>;
   isExporting: boolean;
@@ -25,6 +31,8 @@ const ANCHOR_LABELS: Record<AnchorPoint, string> = {
 export function ExportPanel({ animation, onExport, isExporting }: ExportPanelProps) {
   const [normalize, setNormalize] = useState(false);
   const [removeBackground, setRemoveBackground] = useState(false);
+  const [backgroundRemovalMode, setBackgroundRemovalMode] =
+    useState<BackgroundRemovalMode>("spritesheet");
   const [alphaThresholdEnabled, setAlphaThresholdEnabled] = useState(false);
   const [alphaThreshold, setAlphaThreshold] = useState(16);
   const [projectSettings, setProjectSettings] = useState<ProjectSettings | null>(null);
@@ -93,6 +101,15 @@ export function ExportPanel({ animation, onExport, isExporting }: ExportPanelPro
     animation.generationJob?.outputs?.spritesheetUrl;
   const sourceThumbnailUrl =
     animation.sourceThumbnailUrl ?? animation.generationJob?.outputs?.thumbnailUrl;
+  const generationQueue = Array.isArray(animation.generationQueue)
+    ? animation.generationQueue
+    : [];
+  const queueOutputs = generationQueue.filter(
+    (item) =>
+      item.outputs?.videoUrl ||
+      item.outputs?.spritesheetUrl ||
+      item.outputs?.thumbnailUrl
+  );
 
   const sourceLinks = [
     {
@@ -183,8 +200,25 @@ export function ExportPanel({ animation, onExport, isExporting }: ExportPanelPro
               onChange={(e) => setRemoveBackground(e.target.checked)}
               className="w-4 h-4 accent-primary"
             />
-            <span className="text-xs text-foreground">Re-key background color</span>
+            <span className="text-xs text-foreground">Remove background on export (AI)</span>
           </label>
+          {removeBackground && (
+            <div className="pl-6 flex items-center gap-2 text-[10px] text-muted-foreground">
+              <span>Mode</span>
+              <select
+                value={backgroundRemovalMode}
+                onChange={(event) => {
+                  const next =
+                    event.target.value === "per-frame" ? "per-frame" : "spritesheet";
+                  setBackgroundRemovalMode(next);
+                }}
+                className="terminal-input h-7 px-2 text-[10px] bg-card"
+              >
+                <option value="spritesheet">Spritesheet (fast)</option>
+                <option value="per-frame">Per-frame (accurate)</option>
+              </select>
+            </div>
+          )}
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
@@ -214,7 +248,7 @@ export function ExportPanel({ animation, onExport, isExporting }: ExportPanelPro
           )}
           {(removeBackground || alphaThresholdEnabled) && (
             <p className="text-[10px] text-muted-foreground/70">
-              Applied only to export output. Originals remain unchanged. Uses the working key color (default magenta).
+              Applied only to export output. Originals remain unchanged.
             </p>
           )}
         </div>
@@ -225,6 +259,7 @@ export function ExportPanel({ animation, onExport, isExporting }: ExportPanelPro
             onExport({
               normalize,
               removeBackground,
+              backgroundRemovalMode,
               alphaThreshold: alphaThresholdEnabled ? alphaThreshold : 0,
             })
           }
@@ -239,7 +274,8 @@ export function ExportPanel({ animation, onExport, isExporting }: ExportPanelPro
           <p className="text-[10px] text-muted-foreground leading-relaxed">
             Export will generate spritesheet PNG, Aseprite JSON metadata in both array and hash formats.
             {normalize && " Frames will be normalized to the project canvas size."}
-            {removeBackground && " Background will be re-keyed using the working key color."}
+            {removeBackground &&
+              ` Background removal (${backgroundRemovalMode === "per-frame" ? "per-frame" : "spritesheet"} mode).`}
             {alphaThresholdEnabled &&
               ` Alpha will be clamped at ${alphaThreshold} for crisp edges.`}
           </p>
@@ -306,6 +342,80 @@ export function ExportPanel({ animation, onExport, isExporting }: ExportPanelPro
                   ) : (
                     <span className="text-[10px] text-muted-foreground/50">Unavailable</span>
                   )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {queueOutputs.length > 0 && (
+          <div className="space-y-2 pt-2 border-t border-border">
+            <span className="text-[10px] text-muted-foreground tracking-wider">
+              Queue Outputs
+            </span>
+            <div className="space-y-2">
+              {queueOutputs.map((item, index) => (
+                <div
+                  key={item.id}
+                  className="border border-border/60 bg-background/40 p-2 text-[10px] space-y-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-foreground">Segment {index + 1}</span>
+                    <span
+                      className={
+                        item.status === "completed"
+                          ? "text-success"
+                          : item.status === "failed"
+                          ? "text-destructive"
+                          : item.status === "in_progress"
+                          ? "text-warning"
+                          : "text-muted-foreground"
+                      }
+                    >
+                      {item.status.replace("_", " ")}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {item.outputs?.videoUrl ? (
+                      <a
+                        href={item.outputs.videoUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        download
+                        className="px-2 py-1 text-[9px] border border-border text-primary hover:border-primary transition-colors text-center"
+                      >
+                        MP4
+                      </a>
+                    ) : (
+                      <span className="text-[9px] text-muted-foreground">MP4</span>
+                    )}
+                    {item.outputs?.spritesheetUrl ? (
+                      <a
+                        href={item.outputs.spritesheetUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        download
+                        className="px-2 py-1 text-[9px] border border-border text-primary hover:border-primary transition-colors text-center"
+                      >
+                        SHEET
+                      </a>
+                    ) : (
+                      <span className="text-[9px] text-muted-foreground">Sheet</span>
+                    )}
+                    {item.outputs?.thumbnailUrl ? (
+                      <a
+                        href={item.outputs.thumbnailUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        download
+                        className="px-2 py-1 text-[9px] border border-border text-primary hover:border-primary transition-colors text-center"
+                      >
+                        THUMB
+                      </a>
+                    ) : (
+                      <span className="text-[9px] text-muted-foreground">Thumb</span>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

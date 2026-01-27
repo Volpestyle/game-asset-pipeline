@@ -1,32 +1,73 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout";
-import type { Animation } from "@/types";
-import { Play, Trash } from "iconoir-react";
+import type { Animation, Character } from "@/types";
+import { Play, Trash, User } from "iconoir-react";
+
+interface GroupedAnimations {
+  character: Character | null;
+  animations: Animation[];
+}
 
 export default function AnimationsPage() {
   const [animations, setAnimations] = useState<Animation[]>([]);
+  const [characters, setCharacters] = useState<Character[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const loadAnimations = async () => {
+  const loadData = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch("/api/animations", { cache: "no-store" });
-      const data = await response.json();
-      setAnimations(data.animations ?? []);
+      const [animationsRes, charactersRes] = await Promise.all([
+        fetch("/api/animations", { cache: "no-store" }),
+        fetch("/api/characters", { cache: "no-store" }),
+      ]);
+      const animationsData = await animationsRes.json();
+      const charactersData = await charactersRes.json();
+      setAnimations(animationsData.animations ?? []);
+      setCharacters(charactersData.characters ?? []);
     } catch {
       setAnimations([]);
+      setCharacters([]);
     } finally {
       setIsLoading(false);
     }
   };
 
+  const groupedAnimations = useMemo((): GroupedAnimations[] => {
+    const characterMap = new Map(characters.map((c) => [c.id, c]));
+    const groups = new Map<string, Animation[]>();
+
+    for (const animation of animations) {
+      const key = animation.characterId || "unknown";
+      const existing = groups.get(key) || [];
+      existing.push(animation);
+      groups.set(key, existing);
+    }
+
+    const result: GroupedAnimations[] = [];
+    for (const [characterId, anims] of groups) {
+      result.push({
+        character: characterMap.get(characterId) || null,
+        animations: anims.sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        ),
+      });
+    }
+
+    return result.sort((a, b) => {
+      const nameA = a.character?.name || "Unknown";
+      const nameB = b.character?.name || "Unknown";
+      return nameA.localeCompare(nameB);
+    });
+  }, [animations, characters]);
+
   useEffect(() => {
-    void loadAnimations();
+    void loadData();
   }, []);
 
   const handleDelete = async (animationId: string) => {
@@ -51,9 +92,14 @@ export default function AnimationsPage() {
 
   return (
     <div className="min-h-screen grid-bg">
-      <Header backHref="/">
+      <Header
+        breadcrumb={[
+          { label: "Dashboard", href: "/" },
+          { label: "Animations" },
+        ]}
+      >
         <Button
-          onClick={loadAnimations}
+          onClick={loadData}
           variant="outline"
           className="h-7 px-3 text-[10px] tracking-wider border-border hover:border-primary hover:text-primary"
         >
@@ -92,8 +138,12 @@ export default function AnimationsPage() {
               </div>
               <div className="space-y-2 text-xs">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Total</span>
+                  <span className="text-muted-foreground">Total Animations</span>
                   <span className="metric-value">{isLoading ? "--" : animations.length}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Characters</span>
+                  <span className="metric-value">{isLoading ? "--" : groupedAnimations.length}</span>
                 </div>
               </div>
             </div>
@@ -121,47 +171,102 @@ export default function AnimationsPage() {
               </Link>
             </div>
           ) : (
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 stagger-children">
-              {animations.map((animation) => (
-                <div key={animation.id} className="tech-border bg-card p-4 hover-highlight">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="text-xs text-muted-foreground tracking-wider">Animation</div>
-                    <span className="text-[10px] text-muted-foreground capitalize">
-                      {animation.status}
-                    </span>
-                  </div>
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium">{animation.name}</p>
-                    <p className="text-[10px] text-muted-foreground tracking-wider capitalize">
-                      {animation.style} · {animation.frameCount}f @ {animation.fps}fps
-                    </p>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      {animation.description}
-                    </p>
-                  </div>
-                  <div className="mt-4">
-                    <div className="flex gap-2">
-                      <Link href={`/animations/${animation.id}`} className="flex-1">
-                        <Button
-                          variant="outline"
-                          className="w-full h-8 px-3 text-[10px] tracking-wider border-border hover:border-primary hover:text-primary"
-                        >
-                          OPEN
-                        </Button>
-                      </Link>
-                      <Button
-                        variant="outline"
-                        onClick={() => handleDelete(animation.id)}
-                        disabled={deletingId === animation.id}
-                        className="h-8 w-8 p-0 border-destructive/60 text-destructive hover:border-destructive"
-                        title="Delete animation"
-                      >
-                        <Trash className="w-3.5 h-3.5" strokeWidth={2} />
-                      </Button>
+            <div className="space-y-6">
+              {groupedAnimations.map((group) => {
+                const characterId = group.character?.id || "unknown";
+                const primaryRef = group.character?.referenceImages?.find((r) => r.isPrimary);
+                const thumbnailUrl = primaryRef?.url || group.character?.workingReference?.url;
+
+                return (
+                  <div key={characterId} className="tech-border bg-card">
+                    <div className="px-4 py-3 border-b border-border flex items-center gap-3">
+                      {thumbnailUrl ? (
+                        <div className="w-8 h-8 relative border border-border bg-black/20 flex-shrink-0">
+                          <Image
+                            src={thumbnailUrl}
+                            alt={group.character?.name || "Character"}
+                            fill
+                            className="object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <div className="w-8 h-8 border border-border bg-black/20 flex items-center justify-center flex-shrink-0">
+                          <User className="w-4 h-4 text-muted-foreground" strokeWidth={1.5} />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium truncate">
+                            {group.character?.name || "Unknown Character"}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground ml-2">
+                            {group.animations.length} animation{group.animations.length !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                        {group.character && (
+                          <p className="text-[10px] text-muted-foreground tracking-wider capitalize">
+                            {group.character.style}
+                          </p>
+                        )}
+                      </div>
+                      {group.character && (
+                        <Link href={`/characters/${group.character.id}`}>
+                          <Button
+                            variant="outline"
+                            className="h-6 px-2 text-[9px] tracking-wider border-border hover:border-primary hover:text-primary"
+                          >
+                            VIEW
+                          </Button>
+                        </Link>
+                      )}
+                    </div>
+                    <div className="p-4">
+                      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {group.animations.map((animation) => (
+                          <div
+                            key={animation.id}
+                            className="border border-border/50 bg-background/50 p-3 hover-highlight"
+                          >
+                            <div className="flex items-center justify-between mb-2">
+                              <p className="text-xs font-medium truncate">{animation.name}</p>
+                              <span className="text-[9px] text-muted-foreground capitalize ml-2">
+                                {animation.status}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground tracking-wider capitalize mb-1">
+                              {animation.style} · {animation.frameCount}f @ {animation.fps}fps
+                            </p>
+                            {animation.description && (
+                              <p className="text-[10px] text-muted-foreground leading-relaxed line-clamp-2">
+                                {animation.description}
+                              </p>
+                            )}
+                            <div className="mt-3 flex gap-2">
+                              <Link href={`/animations/${animation.id}`} className="flex-1">
+                                <Button
+                                  variant="outline"
+                                  className="w-full h-7 px-2 text-[9px] tracking-wider border-border hover:border-primary hover:text-primary"
+                                >
+                                  OPEN
+                                </Button>
+                              </Link>
+                              <Button
+                                variant="outline"
+                                onClick={() => handleDelete(animation.id)}
+                                disabled={deletingId === animation.id}
+                                className="h-7 w-7 p-0 border-destructive/60 text-destructive hover:border-destructive"
+                                title="Delete animation"
+                              >
+                                <Trash className="w-3 h-3" strokeWidth={2} />
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

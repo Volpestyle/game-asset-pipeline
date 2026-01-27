@@ -1,10 +1,16 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout";
-import type { AnimationStyle, Character, PromptProfile } from "@/types";
+import type {
+  AnimationStyle,
+  Character,
+  GenerationProvider,
+  PromptProfile,
+} from "@/types";
 import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
 import {
   EXTRACT_FPS_OPTIONS,
@@ -15,8 +21,8 @@ import {
   getVideoSizeOptions,
   getVideoSecondsOptions,
   getVideoModelOptions,
-  getVideoProviderForModel,
   getVideoModelPromptProfile,
+  getVideoModelSupportsNegativePrompt,
   isSizeValidForModel,
   getExpectedFrameCount,
 } from "@/components/animation";
@@ -32,12 +38,17 @@ const STYLE_OPTIONS: { value: AnimationStyle; label: string; code: string }[] = 
 
 const LOOP_OPTIONS: { value: "pingpong" | "loop"; label: string }[] = [
   { value: "pingpong", label: "Ping-pong (safe loop)" },
-  { value: "loop", label: "Loop (start/end must match)" },
+  { value: "loop", label: "Loop (end frame = start frame)" },
 ];
 
 const PROMPT_PROFILE_OPTIONS: { value: PromptProfile; label: string }[] = [
   { value: "concise", label: "Concise" },
   { value: "verbose", label: "Verbose" },
+];
+
+const PROVIDER_OPTIONS: { value: GenerationProvider; label: string }[] = [
+  { value: "openai", label: "OpenAI" },
+  { value: "replicate", label: "Replicate" },
 ];
 
 const NewAnimationForm = () => {
@@ -51,6 +62,7 @@ const NewAnimationForm = () => {
   const [description, setDescription] = useState("");
   const [style, setStyle] = useState<AnimationStyle>("idle");
   const defaultModel = "sora-2";
+  const [generationProvider, setGenerationProvider] = useState<GenerationProvider>("openai");
   const [generationModel, setGenerationModel] = useState(defaultModel);
   const [generationSeconds, setGenerationSeconds] = useState(() =>
     getDefaultVideoSeconds(defaultModel)
@@ -62,6 +74,9 @@ const NewAnimationForm = () => {
   const [tooncrafterInterpolate, setTooncrafterInterpolate] = useState(false);
   const [tooncrafterColorCorrection, setTooncrafterColorCorrection] = useState(true);
   const [tooncrafterSeed, setTooncrafterSeed] = useState("");
+  const [tooncrafterNegativePrompt, setTooncrafterNegativePrompt] = useState("");
+  const [tooncrafterEmptyPrompt, setTooncrafterEmptyPrompt] = useState(false);
+  const [generationNegativePrompt, setGenerationNegativePrompt] = useState("");
   const [promptProfile, setPromptProfile] = useState<PromptProfile>(() =>
     getVideoModelPromptProfile(defaultModel)
   );
@@ -71,7 +86,7 @@ const NewAnimationForm = () => {
   const [isPromptEditing, setIsPromptEditing] = useState(false);
   const [draftPromptConcise, setDraftPromptConcise] = useState("");
   const [draftPromptVerbose, setDraftPromptVerbose] = useState("");
-  const [extractFps, setExtractFps] = useState(6);
+  const [extractFps, setExtractFps] = useState(12);
   const [loopMode, setLoopMode] = useState<"pingpong" | "loop">("loop");
   const [sheetColumns, setSheetColumns] = useState(6);
   const [isCreating, setIsCreating] = useState(false);
@@ -85,12 +100,15 @@ const NewAnimationForm = () => {
   const canCreate =
     Boolean(characterId) &&
     Boolean(name.trim()) &&
+    Boolean(generationProvider) &&
     (style !== "custom" || Boolean(description.trim()));
   const expectedFrameCount = getExpectedFrameCount(generationSeconds, extractFps);
   const loopedFrameCount =
     loopMode === "pingpong"
       ? Math.max(1, expectedFrameCount * 2 - 2)
       : expectedFrameCount;
+  const supportsNegativePrompt = getVideoModelSupportsNegativePrompt(generationModel);
+  const isToonCrafter = generationModel === "tooncrafter";
 
   const frameWidth = selectedCharacter?.baseWidth ?? 253;
   const frameHeight = selectedCharacter?.baseHeight ?? 504;
@@ -122,7 +140,10 @@ const NewAnimationForm = () => {
   const effectivePromptVerbose = promptVerbose.trim()
     ? promptVerbose
     : autoPromptVerbose;
-  const promptPreview = isPromptEditing
+  const usesEmptyPrompt = isToonCrafter && tooncrafterEmptyPrompt;
+  const promptPreview = usesEmptyPrompt
+    ? "Empty prompt enabled."
+    : isPromptEditing
     ? promptProfile === "concise"
       ? draftPromptConcise
       : draftPromptVerbose
@@ -137,7 +158,24 @@ const NewAnimationForm = () => {
     () => getVideoSecondsOptions(generationModel),
     [generationModel]
   );
-  const modelOptions = useMemo(() => getVideoModelOptions(), []);
+  const allModelOptions = useMemo(() => getVideoModelOptions(), []);
+  const modelOptions = useMemo(
+    () => allModelOptions.filter((option) => option.provider === generationProvider),
+    [allModelOptions, generationProvider]
+  );
+
+  const applyModelChange = useCallback((nextModel: string) => {
+    const nextSize = isSizeValidForModel(generationSize, nextModel)
+      ? generationSize
+      : coerceVideoSizeForModel(generationSize, nextModel);
+    const nextSeconds = coerceVideoSecondsForModel(generationSeconds, nextModel);
+    if (!promptProfileTouched) {
+      setPromptProfile(getVideoModelPromptProfile(nextModel));
+    }
+    setGenerationModel(nextModel);
+    setGenerationSize(nextSize);
+    setGenerationSeconds(nextSeconds);
+  }, [generationSeconds, generationSize, promptProfileTouched]);
 
   const loadCharacters = async () => {
     try {
@@ -160,6 +198,16 @@ const NewAnimationForm = () => {
     }
   }, [effectivePromptConcise, effectivePromptVerbose, isPromptEditing]);
 
+  useEffect(() => {
+    if (!modelOptions.length) return;
+    const matchesProvider = modelOptions.some(
+      (option) => option.value === generationModel
+    );
+    if (!matchesProvider) {
+      applyModelChange(modelOptions[0].value);
+    }
+  }, [applyModelChange, generationModel, modelOptions]);
+
   const handleCreate = async () => {
     if (!canCreate) return;
 
@@ -175,16 +223,23 @@ const NewAnimationForm = () => {
           name: name.trim(),
           description: description.trim(),
           style,
-          generationProvider: getVideoProviderForModel(generationModel),
+          generationProvider,
           generationModel,
           promptProfile,
           promptConcise,
           promptVerbose,
+          generationNegativePrompt: generationNegativePrompt.trim()
+            ? generationNegativePrompt.trim()
+            : null,
           generationSeconds,
           generationSize,
           generationLoop,
           tooncrafterInterpolate,
           tooncrafterColorCorrection,
+          tooncrafterNegativePrompt: tooncrafterNegativePrompt.trim()
+            ? tooncrafterNegativePrompt.trim()
+            : null,
+          tooncrafterEmptyPrompt,
           tooncrafterSeed: tooncrafterSeed.trim()
             ? Number(tooncrafterSeed)
             : null,
@@ -212,7 +267,13 @@ const NewAnimationForm = () => {
 
   return (
     <div className="min-h-screen grid-bg">
-      <Header backHref="/animations" breadcrumb="animations : new">
+      <Header
+        breadcrumb={[
+          { label: "Dashboard", href: "/" },
+          { label: "Animations", href: "/animations" },
+          { label: "New" },
+        ]}
+      >
         <Button
           onClick={handleCreate}
           disabled={!canCreate || isCreating}
@@ -283,7 +344,11 @@ const NewAnimationForm = () => {
                 </select>
                 {characters.length === 0 && (
                   <p className="text-[10px] text-muted-foreground mt-2">
-                    No characters found. Create one first.
+                    No characters found.{" "}
+                    <Link href="/characters/new" className="text-primary hover:underline">
+                      Create one first
+                    </Link>
+                    .
                   </p>
                 )}
               </div>
@@ -449,26 +514,58 @@ const NewAnimationForm = () => {
             </div>
           </section>
 
+          {supportsNegativePrompt && !isToonCrafter && (
+            <section className="space-y-2">
+              <div>
+                <p className="text-xs text-muted-foreground tracking-wider mb-1">
+                  Negative Prompt
+                </p>
+                <p className="text-sm font-medium">Optional</p>
+              </div>
+              <div className="tech-border bg-card p-4 space-y-2">
+                <textarea
+                  value={generationNegativePrompt}
+                  onChange={(event) => setGenerationNegativePrompt(event.target.value)}
+                  rows={3}
+                  placeholder="Optional: avoid artifacts, extra limbs, blur..."
+                  className="terminal-input w-full p-3 text-xs bg-card resize-none"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Sent as negative_prompt for supported models.
+                </p>
+              </div>
+            </section>
+          )}
+
           <section className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="tech-border bg-card p-4 space-y-2">
+              <p className="text-xs text-muted-foreground tracking-wider">Provider</p>
+              <select
+                value={generationProvider}
+                onChange={(event) => {
+                  const nextProvider = event.target.value;
+                  if (nextProvider === "openai" || nextProvider === "replicate") {
+                    setGenerationProvider(nextProvider);
+                  }
+                }}
+                className="terminal-input w-full h-9 px-3 text-sm bg-card"
+              >
+                {PROVIDER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[10px] text-muted-foreground">
+                Provider selection is required. Models below are filtered by provider.
+              </p>
+            </div>
             <div className="tech-border bg-card p-4 space-y-2">
               <p className="text-xs text-muted-foreground tracking-wider">Model</p>
               <select
                 value={generationModel}
                 onChange={(event) => {
-                  const nextModel = event.target.value;
-                  const nextSize = isSizeValidForModel(generationSize, nextModel)
-                    ? generationSize
-                    : coerceVideoSizeForModel(generationSize, nextModel);
-                  const nextSeconds = coerceVideoSecondsForModel(
-                    generationSeconds,
-                    nextModel
-                  );
-                  if (!promptProfileTouched) {
-                    setPromptProfile(getVideoModelPromptProfile(nextModel));
-                  }
-                  setGenerationModel(nextModel);
-                  setGenerationSize(nextSize);
-                  setGenerationSeconds(nextSeconds);
+                  applyModelChange(event.target.value);
                 }}
                 className="terminal-input w-full h-9 px-3 text-sm bg-card"
               >
@@ -546,7 +643,7 @@ const NewAnimationForm = () => {
               </div>
             </div>
 
-            {generationModel === "tooncrafter" && (
+            {isToonCrafter && (
               <div className="tech-border bg-card p-4 space-y-3">
                 <p className="text-xs text-muted-foreground tracking-wider">ToonCrafter Options</p>
                 <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
@@ -589,6 +686,30 @@ const NewAnimationForm = () => {
                     Leave blank for random.
                   </p>
                 </div>
+                <div className="space-y-1">
+                  <p className="text-[10px] text-muted-foreground tracking-wider">
+                    Negative Prompt
+                  </p>
+                  <textarea
+                    value={tooncrafterNegativePrompt}
+                    onChange={(event) => setTooncrafterNegativePrompt(event.target.value)}
+                    rows={3}
+                    placeholder="Optional: avoid artifacts, extra limbs, blur..."
+                    className="terminal-input w-full p-3 text-xs bg-card resize-none"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Optional. Leave blank to skip.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={tooncrafterEmptyPrompt}
+                    onChange={(event) => setTooncrafterEmptyPrompt(event.target.checked)}
+                    className="form-checkbox"
+                  />
+                  Send empty prompt (ignore auto + overrides)
+                </label>
               </div>
             )}
 
@@ -653,7 +774,9 @@ const NewAnimationForm = () => {
                 {expectedFrameCount}
               </div>
               <p className="text-[10px] text-muted-foreground">
-                Ping-pong output: {loopedFrameCount} frames
+                {loopMode === "pingpong"
+                  ? `Ping-pong output: ${loopedFrameCount} frames`
+                  : `Loop output: ${loopedFrameCount} frames (end frame = start frame)`}
               </p>
             </div>
             <div className="tech-border bg-card p-4 space-y-2">
