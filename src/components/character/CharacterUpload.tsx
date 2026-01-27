@@ -9,6 +9,7 @@ import { CloudUpload, Plus } from "iconoir-react";
 interface CharacterUploadProps {
   onImagesChange?: (images: ReferenceImage[]) => void;
   onStyleChange?: (style: ArtStyle) => void;
+  onBackgroundRemovalChange?: (enabled: boolean) => void;
 }
 
 const IMAGE_TYPES: { value: ReferenceImageType; label: string; code: string }[] = [
@@ -29,10 +30,15 @@ const ART_STYLES: { value: ArtStyle; label: string; code: string }[] = [
   { value: "custom", label: "Custom", code: "CST" },
 ];
 
-export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUploadProps) {
+export function CharacterUpload({
+  onImagesChange,
+  onStyleChange,
+  onBackgroundRemovalChange,
+}: CharacterUploadProps) {
   const [images, setImages] = useState<ReferenceImage[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState<ArtStyle | null>(null);
+  const [removeBackground, setRemoveBackground] = useState(true);
 
   const handleFiles = useCallback((files: FileList | null) => {
     if (!files) return;
@@ -99,6 +105,11 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
     onStyleChange?.(style);
   };
 
+  const handleBackgroundToggle = (checked: boolean) => {
+    setRemoveBackground(checked);
+    onBackgroundRemovalChange?.(checked);
+  };
+
   return (
     <div className="space-y-8">
       {/* Section Header */}
@@ -151,7 +162,33 @@ export function CharacterUpload({ onImagesChange, onStyleChange }: CharacterUplo
           <p className="text-[10px] text-muted-foreground/60 tracking-wider">
             Local storage · Formats: PNG, JPG, WEBP
           </p>
+          <p className="text-[10px] text-muted-foreground/60 tracking-wider">
+            Transparent PNGs are best. Solid backgrounds can confuse normalization.
+          </p>
         </div>
+      </div>
+
+      <div className="tech-border bg-card/70 p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs text-muted-foreground tracking-widest mb-1">
+              Background
+            </p>
+            <p className="text-sm font-medium">Cleanup</p>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={removeBackground}
+              onChange={(event) => handleBackgroundToggle(event.target.checked)}
+              className="form-checkbox"
+            />
+            Remove background (AI)
+          </label>
+        </div>
+        <p className="text-[10px] text-muted-foreground leading-relaxed mt-2">
+          AI background removal runs on upload and saves as PNG with transparency. Disable if it removes important details.
+        </p>
       </div>
 
       {/* Uploaded Images Grid */}

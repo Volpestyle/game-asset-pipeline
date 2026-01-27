@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { User } from "iconoir-react";
 import { Header } from "@/components/layout/Header";
@@ -11,7 +12,12 @@ export default async function CharactersPage() {
 
   return (
     <div className="min-h-screen grid-bg">
-      <Header backHref="/">
+      <Header
+        breadcrumb={[
+          { label: "Dashboard", href: "/" },
+          { label: "Characters" },
+        ]}
+      >
         <Link href="/characters">
           <Button
             variant="outline"
@@ -79,51 +85,67 @@ export default async function CharactersPage() {
             </div>
           ) : (
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 stagger-children">
-              {characters.map((character) => (
-                <div key={character.id} className="tech-border bg-card p-4 hover-highlight">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="text-xs text-muted-foreground tracking-wider">Character</div>
-                    <span className="text-[10px] text-muted-foreground">
-                      {character.referenceImages.length} refs
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 border border-border flex items-center justify-center bg-secondary">
-                      <User className="w-5 h-5 text-primary" strokeWidth={1.5} />
+              {characters.map((character) => {
+                const primaryRef =
+                  character.referenceImages.find((img) => img.isPrimary) ??
+                  character.referenceImages[0];
+
+                return (
+                  <div key={character.id} className="tech-border bg-card p-4 hover-highlight">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-xs text-muted-foreground tracking-wider">Character</div>
+                      <span className="text-[10px] text-muted-foreground">
+                        {character.referenceImages.length} refs
+                      </span>
                     </div>
-                    <div>
-                      <p className="text-xs font-medium">{character.name}</p>
-                      <p className="text-[10px] text-muted-foreground tracking-wider capitalize">
-                        {character.style.replace("-", " ")}
-                      </p>
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 border border-border flex items-center justify-center bg-secondary overflow-hidden">
+                        {primaryRef?.url ? (
+                          <Image
+                            src={primaryRef.url}
+                            alt={character.name}
+                            width={40}
+                            height={40}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <User className="w-5 h-5 text-primary" strokeWidth={1.5} />
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium">{character.name}</p>
+                        <p className="text-[10px] text-muted-foreground tracking-wider capitalize">
+                          {character.style.replace("-", " ")}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
+                      <span>ID</span>
+                      <span className="text-primary">{character.id.slice(0, 8)}</span>
+                    </div>
+                    <div className="mt-4">
+                      <div className="flex gap-2">
+                        <Link href={`/animations/new?characterId=${character.id}`} className="flex-1">
+                          <Button
+                            variant="outline"
+                            className="w-full h-8 px-3 text-[10px] tracking-wider border-border hover:border-primary hover:text-primary"
+                          >
+                            CREATE ANIMATION
+                          </Button>
+                        </Link>
+                        <Link href={`/characters/${character.id}`}>
+                          <Button
+                            variant="outline"
+                            className="h-8 px-3 text-[10px] tracking-wider border-border hover:border-primary hover:text-primary"
+                          >
+                            EDIT
+                          </Button>
+                        </Link>
+                      </div>
                     </div>
                   </div>
-                  <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-                    <span>ID</span>
-                    <span className="text-primary">{character.id.slice(0, 8)}</span>
-                  </div>
-                  <div className="mt-4">
-                    <div className="flex gap-2">
-                      <Link href={`/animations/new?characterId=${character.id}`} className="flex-1">
-                        <Button
-                          variant="outline"
-                          className="w-full h-8 px-3 text-[10px] tracking-wider border-border hover:border-primary hover:text-primary"
-                        >
-                          CREATE ANIMATION
-                        </Button>
-                      </Link>
-                      <Link href={`/characters/${character.id}`}>
-                        <Button
-                          variant="outline"
-                          className="h-8 px-3 text-[10px] tracking-wider border-border hover:border-primary hover:text-primary"
-                        >
-                          EDIT
-                        </Button>
-                      </Link>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

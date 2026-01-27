@@ -1,12 +1,21 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Header } from "@/components/layout";
-import type { AnchorPoint, ArtStyle, Character, ReferenceImageType } from "@/types";
+import type { AnchorPoint, ArtStyle, Character, ReferenceImage, ReferenceImageType } from "@/types";
+import { logger } from "@/lib/logger";
 
 const ANCHOR_OPTIONS: { value: AnchorPoint; label: string }[] = [
   { value: "bottom-center", label: "Bottom Center (feet)" },
@@ -34,13 +43,44 @@ const ART_STYLES: { value: ArtStyle; label: string; code: string }[] = [
   { value: "custom", label: "Custom", code: "CST" },
 ];
 
+const isReferenceType = (value: string): value is ReferenceImageType => {
+  return IMAGE_TYPES.some((type) => type.value === value);
+};
+
+const parseReferenceType = (value: string): ReferenceImageType => {
+  return isReferenceType(value) ? value : "other";
+};
+
+const isAnchorPoint = (value: string): value is AnchorPoint => {
+  return ANCHOR_OPTIONS.some((option) => option.value === value);
+};
+
+const parseAnchorPoint = (value: string): AnchorPoint | undefined => {
+  return isAnchorPoint(value) ? value : undefined;
+};
+
+const createUploadId = (seed: number) => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${seed}`;
+};
+
 export default function CharacterDetailPage() {
   const params = useParams();
   const characterId = String(params.id ?? "");
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const [character, setCharacter] = useState<Character | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [removingReferenceId, setRemovingReferenceId] = useState<string | null>(null);
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+  const [pendingRemove, setPendingRemove] = useState<ReferenceImage | null>(null);
+  const [uploadQueue, setUploadQueue] = useState<ReferenceImage[]>([]);
+  const [isUploadDragOver, setIsUploadDragOver] = useState(false);
+  const [uploadRemoveBackground, setUploadRemoveBackground] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,6 +121,194 @@ export default function CharacterDetailPage() {
       img.id === id ? { ...img, type } : img
     );
     setCharacter({ ...character, referenceImages: updated });
+  };
+
+  const handleUploadFiles = useCallback((files: FileList | null) => {
+    if (!files) return;
+    setError(null);
+    setMessage(null);
+    const newImages: ReferenceImage[] = Array.from(files)
+      .filter((file) => file.type.startsWith("image/"))
+      .map((file, index) => ({
+        id: createUploadId(index),
+        url: URL.createObjectURL(file),
+        file,
+        type: "other",
+        isPrimary: false,
+      }));
+
+    if (newImages.length === 0) {
+      setError("Only image files can be uploaded.");
+      return;
+    }
+
+    setUploadQueue((prev) => [...prev, ...newImages]);
+  }, []);
+
+  const handleUploadDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsUploadDragOver(false);
+    handleUploadFiles(event.dataTransfer.files);
+  }, [handleUploadFiles]);
+
+  const handleUploadDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsUploadDragOver(true);
+  }, []);
+
+  const handleUploadDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsUploadDragOver(false);
+  }, []);
+
+  const updateUploadType = (id: string, typeValue: string) => {
+    const nextType = parseReferenceType(typeValue);
+    setUploadQueue((prev) =>
+      prev.map((img) => (img.id === id ? { ...img, type: nextType } : img))
+    );
+  };
+
+  const removeUploadImage = (id: string) => {
+    setUploadQueue((prev) => {
+      const target = prev.find((img) => img.id === id);
+      if (target) {
+        URL.revokeObjectURL(target.url);
+      }
+      return prev.filter((img) => img.id !== id);
+    });
+  };
+
+  const handleUploadQueue = async () => {
+    if (!character || uploadQueue.length === 0) return;
+    setIsUploading(true);
+    setMessage(null);
+    setError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("removeBackground", uploadRemoveBackground ? "true" : "false");
+      uploadQueue.forEach((image) => {
+        if (image.file) {
+          formData.append("images", image.file, image.file.name || "reference.png");
+        }
+        formData.append("types", image.type);
+      });
+
+      const response = await fetch(`/api/characters/${characterId}/references`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data?.error || "Failed to add reference images.");
+      }
+
+      const data = await response.json();
+      setCharacter(data.character);
+      uploadQueue.forEach((image) => {
+        URL.revokeObjectURL(image.url);
+      });
+      setUploadQueue([]);
+      const addedCount = uploadQueue.length;
+      setMessage(`Added ${addedCount} reference${addedCount === 1 ? "" : "s"}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add reference images.");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const openRemoveDialog = (image: ReferenceImage) => {
+    if (!character || removingReferenceId) return;
+    if (character.referenceImages.length <= 1) {
+      setError("At least one reference image is required.");
+      logger.warn("Attempted to remove the last reference image", {
+        characterId,
+        referenceId: image.id,
+      });
+      return;
+    }
+    setMessage(null);
+    setError(null);
+    setPendingRemove(image);
+    setRemoveDialogOpen(true);
+    logger.info("Reference removal dialog opened", {
+      characterId,
+      referenceId: image.id,
+      type: image.type,
+    });
+  };
+
+  const handleRemoveDialogChange = (nextOpen: boolean) => {
+    if (removingReferenceId) return;
+    setRemoveDialogOpen(nextOpen);
+    if (!nextOpen) {
+      if (pendingRemove) {
+        logger.info("Reference removal dialog closed", {
+          characterId,
+          referenceId: pendingRemove.id,
+        });
+      }
+      setPendingRemove(null);
+    }
+  };
+
+  const confirmRemoveReference = async () => {
+    if (!character || !pendingRemove || removingReferenceId) return;
+    if (character.referenceImages.length <= 1) {
+      setError("At least one reference image is required.");
+      return;
+    }
+
+    const referenceId = pendingRemove.id;
+    setRemovingReferenceId(referenceId);
+    setMessage(null);
+    setError(null);
+
+    logger.info("Removing reference image", {
+      characterId,
+      referenceId,
+      type: pendingRemove.type,
+    });
+
+    let didRemove = false;
+
+    try {
+      const response = await fetch(
+        `/api/characters/${characterId}/references?referenceId=${encodeURIComponent(referenceId)}`,
+        { method: "DELETE" }
+      );
+      if (!response.ok) {
+        const data = await response.json();
+        logger.warn("Reference removal failed", {
+          characterId,
+          referenceId,
+          status: response.status,
+          error: data?.error ?? "Unknown error",
+        });
+        throw new Error(data?.error || "Failed to remove reference image.");
+      }
+      const data = await response.json();
+      setCharacter(data.character);
+      setMessage("Reference removed.");
+      didRemove = true;
+      logger.info("Reference image removed", { characterId, referenceId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to remove reference image.";
+      setError(message);
+      logger.error("Failed to remove reference image", {
+        characterId,
+        referenceId,
+        error: message,
+      });
+    } finally {
+      setRemovingReferenceId(null);
+      if (didRemove) {
+        setRemoveDialogOpen(false);
+        setPendingRemove(null);
+      }
+    }
   };
 
   const handleSave = async () => {
@@ -140,7 +368,13 @@ export default function CharacterDetailPage() {
 
   return (
     <div className="min-h-screen grid-bg">
-      <Header backHref="/characters" breadcrumb={`characters : ${character.name}`}>
+      <Header
+        breadcrumb={[
+          { label: "Dashboard", href: "/" },
+          { label: "Characters", href: "/characters" },
+          { label: character.name },
+        ]}
+      >
         <Button
           onClick={handleSave}
           disabled={isSaving}
@@ -220,7 +454,7 @@ export default function CharacterDetailPage() {
                 </div>
               </div>
               <p className="text-[10px] text-muted-foreground leading-relaxed">
-                You can update types and primary reference below. Adding or removing files is not supported yet.
+                Manage reference images, primary selection, and metadata below.
               </p>
             </div>
           </section>
@@ -242,7 +476,7 @@ export default function CharacterDetailPage() {
                   value={character.anchor ?? ""}
                   onChange={(e) => setCharacter({
                     ...character,
-                    anchor: e.target.value ? e.target.value as AnchorPoint : undefined,
+                    anchor: parseAnchorPoint(e.target.value),
                   })}
                   className="terminal-input w-full h-9 px-3 text-sm bg-card"
                 >
@@ -299,7 +533,7 @@ export default function CharacterDetailPage() {
                   <div className="flex items-center justify-between">
                     <select
                       value={image.type}
-                      onChange={(event) => updateType(image.id, event.target.value as ReferenceImageType)}
+                      onChange={(event) => updateType(image.id, parseReferenceType(event.target.value))}
                       className="text-[10px] bg-card border border-border px-2 py-1 text-foreground w-full"
                     >
                       {IMAGE_TYPES.map((type) => (
@@ -319,12 +553,144 @@ export default function CharacterDetailPage() {
                   >
                     {image.isPrimary ? "PRIMARY" : "SET PRIMARY"}
                   </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={character.referenceImages.length <= 1 || removingReferenceId !== null}
+                    onClick={() => openRemoveDialog(image)}
+                    className="w-full h-7 px-2 text-[10px] tracking-wider border-destructive/50 text-destructive hover:border-destructive hover:text-destructive"
+                  >
+                    {removingReferenceId === image.id ? "REMOVING" : "REMOVE"}
+                  </Button>
                 </div>
               ))}
+            </div>
+            <div className="tech-border bg-card/70 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground tracking-wider">Add References</p>
+                {uploadQueue.length > 0 && (
+                  <span className="text-[10px] text-muted-foreground">
+                    <span className="text-primary metric-value">{uploadQueue.length}</span> queued
+                  </span>
+                )}
+              </div>
+              <div
+                className={`drop-zone p-6 cursor-pointer transition-all duration-150 ${isUploadDragOver ? "drag-over" : ""}`}
+                onDrop={handleUploadDrop}
+                onDragOver={handleUploadDragOver}
+                onDragLeave={handleUploadDragLeave}
+                onClick={() => uploadInputRef.current?.click()}
+              >
+                <input
+                  ref={uploadInputRef}
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(event) => handleUploadFiles(event.target.files)}
+                />
+                <div className="text-center space-y-2">
+                  <p className="text-xs text-foreground">Drop files here</p>
+                  <p className="text-[10px] text-muted-foreground">or click to browse</p>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={uploadRemoveBackground}
+                  onChange={(event) => setUploadRemoveBackground(event.target.checked)}
+                  className="form-checkbox"
+                />
+                Remove background (AI)
+              </label>
+              {uploadQueue.length > 0 && (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {uploadQueue.map((image) => (
+                    <div key={image.id} className="tech-border p-2 space-y-2">
+                      <img
+                        src={image.url}
+                        alt={image.type}
+                        className="w-full aspect-square object-cover border border-border"
+                      />
+                      <select
+                        value={image.type}
+                        onChange={(event) => updateUploadType(image.id, event.target.value)}
+                        className="text-[10px] bg-card border border-border px-2 py-1 text-foreground w-full"
+                      >
+                        {IMAGE_TYPES.map((type) => (
+                          <option key={type.value} value={type.value}>
+                            {type.code} - {type.label}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => removeUploadImage(image.id)}
+                        className="w-full h-7 px-2 text-[10px] tracking-wider border-destructive/50 text-destructive hover:border-destructive hover:text-destructive"
+                      >
+                        REMOVE
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex justify-end">
+                <Button
+                  onClick={handleUploadQueue}
+                  disabled={uploadQueue.length === 0 || isUploading}
+                  className="bg-primary hover:bg-primary/80 text-primary-foreground h-7 px-3 text-[10px] tracking-wider disabled:opacity-40"
+                >
+                  {isUploading ? "UPLOADING" : "UPLOAD REFERENCES"}
+                </Button>
+              </div>
             </div>
           </section>
         </div>
       </main>
+
+      <Dialog open={removeDialogOpen} onOpenChange={handleRemoveDialogChange}>
+        <DialogContent className="bg-card border-border">
+          <DialogHeader>
+            <DialogTitle className="text-sm tracking-wider">Remove reference image</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              This cannot be undone. The next primary reference will be picked automatically if needed.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingRemove && (
+            <div className="tech-border bg-card/70 p-3 flex items-center gap-3">
+              <img
+                src={pendingRemove.url}
+                alt={`${pendingRemove.type} reference`}
+                className="size-16 object-contain border border-border"
+              />
+              <div className="space-y-1 text-xs">
+                <div className="text-[10px] text-muted-foreground tracking-wider">REFERENCE</div>
+                <div className="text-foreground">{pendingRemove.type}</div>
+                {pendingRemove.filename && (
+                  <div className="text-[10px] text-muted-foreground">{pendingRemove.filename}</div>
+                )}
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => handleRemoveDialogChange(false)}
+              disabled={removingReferenceId !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmRemoveReference}
+              disabled={removingReferenceId !== null}
+            >
+              {removingReferenceId ? "REMOVING" : "REMOVE"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

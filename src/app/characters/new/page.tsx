@@ -13,6 +13,7 @@ export default function NewCharacterPage() {
   const [name, setName] = useState("");
   const [images, setImages] = useState<ReferenceImage[]>([]);
   const [style, setStyle] = useState<ArtStyle | null>(null);
+  const [removeBackground, setRemoveBackground] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,6 +32,7 @@ export default function NewCharacterPage() {
 
       const primaryIndex = images.findIndex((image) => image.isPrimary);
       formData.append("primaryIndex", String(primaryIndex >= 0 ? primaryIndex : 0));
+      formData.append("removeBackground", removeBackground ? "true" : "false");
 
       images.forEach((image) => {
         if (image.file) {
@@ -61,7 +63,13 @@ export default function NewCharacterPage() {
 
   return (
     <div className="min-h-screen grid-bg">
-      <Header backHref="/" breadcrumb="characters : new">
+      <Header
+        breadcrumb={[
+          { label: "Dashboard", href: "/" },
+          { label: "Characters", href: "/characters" },
+          { label: "New" },
+        ]}
+      >
         <div className="flex items-center gap-2">
           <div className={`status-dot ${canCreate ? "status-dot-online" : "status-dot-warning"}`} />
           <span className="text-muted-foreground">{canCreate ? "Ready" : "Incomplete"}</span>
@@ -172,6 +180,7 @@ export default function NewCharacterPage() {
               <CharacterUpload
                 onImagesChange={setImages}
                 onStyleChange={setStyle}
+                onBackgroundRemovalChange={setRemoveBackground}
               />
             </div>
           </div>
