@@ -39,6 +39,7 @@ export interface ReferenceImage {
   filename?: string;
   type: ReferenceImageType;
   isPrimary: boolean;
+  backgroundRemoved?: boolean;
 }
 
 export type ReferenceImageType = 'front' | 'side' | 'back' | 'detail' | 'action' | 'other';
@@ -61,6 +62,10 @@ export interface SpritesheetLayout {
   height: number;
 }
 
+export type BackgroundRemovalMode = "spritesheet" | "per-frame";
+
+export type GenerationProvider = "openai" | "replicate";
+
 export interface WorkingReference {
   url: string;
   width: number;
@@ -76,11 +81,20 @@ export interface WorkingSpec {
   bgKeyColor: string;
 }
 
+// Animation-level reference images (for multi-image models like nano-banana-pro)
+export interface AnimationReference {
+  id: string;
+  url: string;
+  filename: string;
+  createdAt: string;
+}
+
 // Animation configuration
 export interface Animation {
   id: string;
   characterId: string;
   referenceImageId?: string | null;
+  references?: AnimationReference[];
   name: string;
   description: string;
   frameCount: number;
@@ -89,7 +103,7 @@ export interface Animation {
   spriteSize: number;
   frameWidth?: number;
   frameHeight?: number;
-  generationProvider?: "openai" | "replicate";
+  generationProvider?: GenerationProvider;
   generationModel?: string;
   promptProfile?: PromptProfile;
   promptConcise?: string;
@@ -99,13 +113,17 @@ export interface Animation {
   generationLoop?: boolean;
   generationStartImageUrl?: string | null;
   generationEndImageUrl?: string | null;
+  generationNegativePrompt?: string | null;
   tooncrafterInterpolate?: boolean;
   tooncrafterColorCorrection?: boolean;
   tooncrafterSeed?: number | null;
+  tooncrafterNegativePrompt?: string | null;
+  tooncrafterEmptyPrompt?: boolean;
   extractFps?: number;
   loopMode?: "loop" | "pingpong";
   sheetColumns?: number;
   generationJob?: GenerationJob;
+  generationQueue?: GenerationQueueItem[];
   sourceVideoUrl?: string;
   sourceProviderSpritesheetUrl?: string;
   sourceThumbnailUrl?: string;
@@ -127,9 +145,10 @@ export interface Animation {
     zipBundleUrl?: string;
     normalized?: boolean;
     backgroundRemoved?: boolean;
+    backgroundRemovalMode?: BackgroundRemovalMode;
     alphaThreshold?: number;
+    lastExportedAt?: string;
   };
-  // rd-animation model outputs fixed frame counts
   actualFrameCount?: number;
   createdAt: string;
   updatedAt: string;
@@ -154,6 +173,7 @@ export interface Keyframe {
   prompt?: string;
   model?: 'rd-fast' | 'rd-plus' | 'nano-banana-pro';
   strength?: number;
+  generations?: KeyframeGeneration[];
   // Advanced rd-fast/rd-plus options
   inputPalette?: string;
   tileX?: boolean;
@@ -166,6 +186,24 @@ export interface Keyframe {
 }
 
 export type EasingType = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold';
+
+export interface KeyframeGeneration {
+  id: string;
+  image: string;
+  createdAt: string;
+  source: "generate" | "refine" | "upload" | "select";
+  prompt?: string;
+  model?: 'rd-fast' | 'rd-plus' | 'nano-banana-pro';
+  style?: string;
+  strength?: number;
+  inputPalette?: string;
+  tileX?: boolean;
+  tileY?: boolean;
+  removeBg?: boolean;
+  seed?: number;
+  bypassPromptExpansion?: boolean;
+  saved?: boolean;
+}
 
 export interface GeneratedFrame {
   frameIndex: number;
@@ -187,6 +225,30 @@ export interface GenerationJob {
     spritesheetUrl?: string;
     thumbnailUrl?: string;
   };
+}
+
+export type GenerationQueueStatus = "queued" | "in_progress" | "completed" | "failed";
+
+export interface GenerationQueueItem {
+  id: string;
+  status: GenerationQueueStatus;
+  startFrame: number;
+  endFrame: number;
+  targetFrameCount: number;
+  durationSeconds: number;
+  model: string;
+  provider: GenerationProvider;
+  startImageUrl?: string;
+  endImageUrl?: string | null;
+  progress?: number;
+  error?: string;
+  outputs?: {
+    videoUrl?: string;
+    spritesheetUrl?: string;
+    thumbnailUrl?: string;
+  };
+  createdAt: string;
+  updatedAt?: string;
 }
 
 // Generation

@@ -1,12 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { spawn } from "child_process";
 import sharp from "sharp";
-import {
-  createPrediction,
-  runReplicateModel,
-  waitForPrediction,
-} from "@/lib/ai/replicate";
+import { createPrediction, waitForPrediction } from "@/lib/ai/replicate";
 import {
   createVideoJob,
   downloadVideoContent,
@@ -17,8 +12,22 @@ import {
   normalizeImageToCanvas,
 } from "@/lib/character/workingReference";
 import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
+import { DEFAULT_BG_KEY, parseHexColor } from "@/lib/color";
+import { fileToDataUrl, bufferToDataUrl } from "@/lib/dataUrl";
+import { runFfmpeg } from "@/lib/ffmpeg";
+import { buildSpritesheetLayout, sortFrameFiles } from "@/lib/frameUtils";
+import {
+  normalizeSegmentPlan,
+  sampleEvenly,
+  selectFrameIndices,
+  validateSegmentPlan,
+  type SegmentInput,
+  type SegmentPlan,
+} from "@/lib/generationUtils";
+import { logger } from "@/lib/logger";
 import { getShutdownSignal } from "@/lib/shutdown";
-import { composeSpritesheet, extractFrames } from "@/lib/spritesheet";
+import { composeSpritesheet } from "@/lib/spritesheet";
+import { parseSize } from "@/lib/size";
 import {
   ensureDir,
   fileExists,
@@ -33,54 +42,22 @@ import {
   getDefaultVideoSize,
   getDefaultVideoSeconds,
   coerceVideoSecondsForModel,
-  getVideoProviderForModel,
   getVideoModelConfig,
   getReplicateModelForVideo,
+  getVertexModelForVideo,
   getVideoAspectRatio,
   getVideoResolution,
+  getVideoModelSupportsContinuation,
 } from "@/lib/ai/soraConstraints";
-import type { AnimationStyle, Keyframe } from "@/types";
+import {
+  generateVertexVeoContinuation,
+  getVertexVeoAvailability,
+} from "@/lib/ai/vertexVeo";
+import type { GenerationQueueItem, GeneratedFrame, Keyframe } from "@/types";
 
 export const runtime = "nodejs";
 
-const RD_ANIMATION_MODEL =
-  process.env.RD_ANIMATION_MODEL?.trim() || "retro-diffusion/rd-animation";
-const RD_ANIMATION_VERSION = process.env.RD_ANIMATION_VERSION?.trim() || undefined;
-
-const STYLE_MAP: Record<AnimationStyle, string> = {
-  idle: "walking_and_idle",
-  walk: "four_angle_walking",
-  run: "four_angle_walking",
-  attack: "four_angle_walking",
-  jump: "four_angle_walking",
-  custom: "vfx",
-};
-
-const STYLE_SIZE_OPTIONS: Record<string, number[]> = {
-  four_angle_walking: [48, 96],
-  walking_and_idle: [48, 64],
-  small_sprites: [32],
-};
-
-const MIME_TYPES: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-};
-
-const DEFAULT_BG_KEY = "#FF00FF";
-
-async function fileToDataUrl(filePath: string) {
-  const buffer = await fs.readFile(filePath);
-  const ext = path.extname(filePath).toLowerCase();
-  const mime = MIME_TYPES[ext] ?? "application/octet-stream";
-  return `data:${mime};base64,${buffer.toString("base64")}`;
-}
-
-function bufferToDataUrl(buffer: Buffer, mime = "image/png") {
-  return `data:${mime};base64,${buffer.toString("base64")}`;
-}
+const VEO_CONTINUATION_SECONDS = 7;
 
 async function resolveLocalImagePath(url?: string) {
   if (!url) return null;
@@ -89,28 +66,6 @@ async function resolveLocalImagePath(url?: string) {
     return localPath;
   }
   return null;
-}
-
-function parseSize(size: string) {
-  const [w, h] = size.split("x").map((value) => Number(value));
-  const width = Number.isFinite(w) ? w : 1024;
-  const height = Number.isFinite(h) ? h : 1792;
-  return { width, height };
-}
-
-function parseHexColor(color: string) {
-  const cleaned = color.replace("#", "").trim();
-  if (cleaned.length !== 6) {
-    return { r: 255, g: 0, b: 255 };
-  }
-  const r = Number.parseInt(cleaned.slice(0, 2), 16);
-  const g = Number.parseInt(cleaned.slice(2, 4), 16);
-  const b = Number.parseInt(cleaned.slice(4, 6), 16);
-  return {
-    r: Number.isFinite(r) ? r : 255,
-    g: Number.isFinite(g) ? g : 0,
-    b: Number.isFinite(b) ? b : 255,
-  };
 }
 
 async function resolveImageDimensions(filePath: string) {
@@ -125,23 +80,100 @@ async function resolveImageDimensions(filePath: string) {
   return null;
 }
 
-function sampleEvenly<T>(items: T[], count: number) {
-  if (items.length <= count) return items;
-  const lastIndex = items.length - 1;
-  const selected = new Set<number>();
-  for (let i = 0; i < count; i += 1) {
-    const idx = Math.round((i * lastIndex) / (count - 1));
-    selected.add(idx);
+type InputClampTarget = {
+  width: number;
+  height: number;
+  label: string;
+};
+
+function getInputClampTarget(model: string, generationSize: string): InputClampTarget {
+  const parsed = parseSize(generationSize, { width: 1280, height: 720 });
+  const isPortrait = parsed.height >= parsed.width;
+  if (model === "veo-3.1" || model === "veo-3.1-fast") {
+    return isPortrait
+      ? { width: 720, height: 1280, label: "720x1280" }
+      : { width: 1280, height: 720, label: "1280x720" };
   }
-  if (selected.size < count) {
-    for (let i = 0; i < items.length && selected.size < count; i += 1) {
-      selected.add(i);
-    }
-  }
-  return Array.from(selected)
-    .sort((a, b) => a - b)
-    .map((index) => items[index]);
+  return {
+    width: parsed.width,
+    height: parsed.height,
+    label: `${parsed.width}x${parsed.height}`,
+  };
 }
+
+async function clampInputImageForModel(options: {
+  animationId: string;
+  model: string;
+  generationSize: string;
+  imagePath: string;
+  kind: "start" | "end";
+}) {
+  const target = getInputClampTarget(options.model, options.generationSize);
+  const dims = await resolveImageDimensions(options.imagePath);
+  if (!dims) {
+    logger.warn("Unable to read input image dimensions; skipping clamp", {
+      animationId: options.animationId,
+      imagePath: options.imagePath,
+      kind: options.kind,
+      target,
+    });
+    return options.imagePath;
+  }
+
+  if (dims.width <= target.width && dims.height <= target.height) {
+    return options.imagePath;
+  }
+
+  const outputDir = storagePath(
+    "animations",
+    options.animationId,
+    "generation",
+    "normalized"
+  );
+  await fs.mkdir(outputDir, { recursive: true });
+  const base = path.basename(options.imagePath, path.extname(options.imagePath));
+  const outputPath = path.join(
+    outputDir,
+    `${options.kind}_${base}_${target.label}.png`
+  );
+
+  if (await fileExists(outputPath)) {
+    return outputPath;
+  }
+
+  try {
+    await sharp(options.imagePath)
+      .resize(target.width, target.height, {
+        fit: "inside",
+        withoutEnlargement: true,
+        kernel: "nearest",
+      })
+      .png()
+      .toFile(outputPath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error("Failed to clamp input image", {
+      animationId: options.animationId,
+      imagePath: options.imagePath,
+      outputPath,
+      kind: options.kind,
+      target,
+      error: message,
+    });
+    throw new Error(`Failed to downscale ${options.kind} image for ${options.model}.`);
+  }
+
+  logger.info("Clamped input image for model", {
+    animationId: options.animationId,
+    kind: options.kind,
+    original: dims,
+    target,
+    outputPath,
+  });
+
+  return outputPath;
+}
+
 
 async function buildKeyframeCanvas(options: {
   sourcePath: string;
@@ -173,30 +205,6 @@ async function buildKeyframeCanvas(options: {
   return composed.png().toBuffer();
 }
 
-async function runFfmpeg(args: string[]) {
-  return new Promise<void>((resolve, reject) => {
-    const process = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
-    process.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-    process.on("error", (err) => {
-      const error = err as NodeJS.ErrnoException;
-      if (error.code === "ENOENT") {
-        reject(new Error("ffmpeg not found. Install ffmpeg to extract frames."));
-      } else {
-        reject(err);
-      }
-    });
-    process.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(stderr || `ffmpeg failed with exit code ${code}`));
-      }
-    });
-  });
-}
 
 async function extractVideoFrames(options: {
   videoPath: string;
@@ -227,70 +235,37 @@ async function extractVideoFrames(options: {
   await runFfmpeg(args);
 }
 
-async function keyOutMagenta(filePath: string, color = DEFAULT_BG_KEY) {
-  const cleaned = color.replace("#", "").trim();
-  const target = cleaned.length === 6 ? cleaned : "FF00FF";
-  const rTarget = Number.parseInt(target.slice(0, 2), 16);
-  const gTarget = Number.parseInt(target.slice(2, 4), 16);
-  const bTarget = Number.parseInt(target.slice(4, 6), 16);
-  const tolerance = 12;
-
-  const { data, info } = await sharp(filePath)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    const within =
-      Math.abs(r - rTarget) <= tolerance &&
-      Math.abs(g - gTarget) <= tolerance &&
-      Math.abs(b - bTarget) <= tolerance;
-    if (within) {
-      data[i + 3] = 0;
-    }
-  }
-
-  await sharp(data, {
-    raw: { width: info.width, height: info.height, channels: 4 },
-  })
-    .png()
-    .toFile(filePath);
-}
-
-function sortFrameFiles(files: string[]) {
-  return files
-    .filter((file) => file.endsWith(".png"))
-    .sort((a, b) => {
-      const matchA = a.match(/frame_(\d+)/);
-      const matchB = b.match(/frame_(\d+)/);
-      const indexA = matchA ? Number(matchA[1]) : 0;
-      const indexB = matchB ? Number(matchB[1]) : 0;
-      return indexA - indexB;
-    });
-}
-
-function buildLayout(options: {
-  frameWidth: number;
-  frameHeight: number;
-  columns: number;
-  frameCount: number;
+async function normalizeVeoContinuationVideo(options: {
+  inputPath: string;
+  outputDir: string;
+  aspectRatio: "16:9" | "9:16";
+  resolution: "720p" | "1080p";
 }) {
-  const columns = Math.max(1, options.columns);
-  const rows = Math.max(1, Math.ceil(options.frameCount / columns));
-  return {
-    frameSize:
-      options.frameWidth === options.frameHeight ? options.frameWidth : undefined,
-    frameWidth: options.frameWidth,
-    frameHeight: options.frameHeight,
-    columns,
-    rows,
-    width: columns * options.frameWidth,
-    height: rows * options.frameHeight,
-  };
+  await fs.mkdir(options.outputDir, { recursive: true });
+  const isLandscape = options.aspectRatio === "16:9";
+  const is1080 = options.resolution === "1080p";
+  const width = isLandscape ? (is1080 ? 1920 : 1280) : (is1080 ? 1080 : 720);
+  const height = isLandscape ? (is1080 ? 1080 : 720) : (is1080 ? 1920 : 1280);
+  const outputPath = path.join(options.outputDir, `veo_continuation_${Date.now()}.mp4`);
+  const filters = [
+    "fps=24",
+    `scale=${width}:${height}:flags=bicubic`,
+    "format=yuv420p",
+  ];
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-i",
+    options.inputPath,
+    "-vf",
+    filters.join(","),
+    "-an",
+    outputPath,
+  ];
+  await runFfmpeg(args);
+  return outputPath;
 }
+
 
 async function ensureWorkingReference(options: {
   character: Record<string, unknown>;
@@ -299,7 +274,10 @@ async function ensureWorkingReference(options: {
   generationSize: string;
 }) {
   const character = options.character;
-  const { width, height } = parseSize(options.generationSize);
+  const { width, height } = parseSize(options.generationSize, {
+    width: 1024,
+    height: 1792,
+  });
 
   // Cache key includes both reference image ID and canvas size
   const baseName = `reference_${options.referenceImageId}_${width}x${height}`;
@@ -348,7 +326,10 @@ async function normalizeGenerationFrame(options: {
   generationSize: string;
   bgKeyColor?: string;
 }) {
-  const { width, height } = parseSize(options.generationSize);
+  const { width, height } = parseSize(options.generationSize, {
+    width: 1024,
+    height: 1792,
+  });
   const outputDir = storagePath(
     "animations",
     options.animationId,
@@ -377,7 +358,32 @@ async function normalizeGenerationFrame(options: {
   return outputPath;
 }
 
-async function runGeneration(animationId: string) {
+async function resolveSegmentImagePath(options: {
+  animationId: string;
+  imageUrl: string;
+  referenceUrl: string;
+  workingPath: string;
+  generationSize: string;
+  bgKeyColor?: string;
+  kind: "start" | "end";
+}) {
+  if (options.imageUrl === options.referenceUrl) {
+    return options.workingPath;
+  }
+  const localPath = storagePathFromUrl(options.imageUrl);
+  if (!localPath || !(await fileExists(localPath))) {
+    throw new Error(`Invalid ${options.kind} image path.`);
+  }
+  return normalizeGenerationFrame({
+    animationId: options.animationId,
+    kind: options.kind,
+    sourcePath: localPath,
+    generationSize: options.generationSize,
+    bgKeyColor: options.bgKeyColor,
+  });
+}
+
+async function runGeneration(animationId: string, segments?: SegmentInput[]) {
   const filePath = storagePath("animations", animationId, "animation.json");
   let animation = await readJson<Record<string, unknown>>(filePath);
 
@@ -434,25 +440,107 @@ async function runGeneration(animationId: string) {
 
     const model = String(animation.generationModel ?? "sora-2");
     const modelConfig = getVideoModelConfig(model);
-    const requestedProvider = String(animation.generationProvider ?? "");
-    const modelProvider = getVideoProviderForModel(model);
-    const provider = requestedProvider === "replicate" ? "replicate" : modelProvider;
+    const supportsContinuation = getVideoModelSupportsContinuation(model);
+    const vertexModelId = getVertexModelForVideo(model);
+    const supportsNegativePrompt = Boolean(modelConfig.supportsNegativePrompt);
+    const generationNegativePrompt =
+      typeof animation.generationNegativePrompt === "string"
+        ? animation.generationNegativePrompt.trim()
+        : "";
+    const requestedProvider = String(animation.generationProvider ?? "").trim();
+    if (requestedProvider !== "openai" && requestedProvider !== "replicate") {
+      throw new Error("Generation provider is required. Select OpenAI or Replicate.");
+    }
+    const modelProvider = modelConfig.provider;
+    if (requestedProvider !== modelProvider) {
+      throw new Error(
+        `Generation provider (${requestedProvider}) does not match model provider (${modelProvider}).`
+      );
+    }
+    const provider: "openai" | "replicate" = requestedProvider;
     const requestedSize = String(
       animation.generationSize ?? getDefaultVideoSize(model)
     );
     const size = coerceVideoSizeForModel(requestedSize, model);
+    const useSegmentPlan = Array.isArray(segments) && segments.length > 0;
     const requestedSeconds = Number(
       animation.generationSeconds ?? getDefaultVideoSeconds(model)
     );
-    const seconds = coerceVideoSecondsForModel(requestedSeconds, model);
-    const requestedFps = Number(animation.extractFps ?? animation.fps ?? 6);
-    const extractFps = [6, 8, 12].includes(requestedFps) ? requestedFps : 6;
+    const seconds = useSegmentPlan
+      ? requestedSeconds
+      : coerceVideoSecondsForModel(requestedSeconds, model);
+    const requestedFps = Number(animation.extractFps ?? animation.fps ?? 12);
+    const extractFps = [6, 8, 12, 24].includes(requestedFps) ? requestedFps : 12;
     const loopMode =
       String(animation.loopMode ?? "loop") === "pingpong" ? "pingpong" : "loop";
     const sheetColumns = Math.max(1, Number(animation.sheetColumns ?? 6));
-    const frameWidth = Number(animation.frameWidth ?? character.baseWidth ?? 253);
-    const frameHeight = Number(animation.frameHeight ?? character.baseHeight ?? 504);
+    let frameWidth = Number(animation.frameWidth ?? character.baseWidth ?? 253);
+    let frameHeight = Number(animation.frameHeight ?? character.baseHeight ?? 504);
     const expectedFrameCount = Math.max(1, Math.round(seconds * extractFps));
+
+    const frameSizeNotes: string[] = [];
+    const requestedFrameWidth = frameWidth;
+    const requestedFrameHeight = frameHeight;
+    const sizeBounds = parseSize(size, {
+      width: frameWidth,
+      height: frameHeight,
+    });
+    const scaleToGeneration = Math.min(
+      1,
+      sizeBounds.width / frameWidth,
+      sizeBounds.height / frameHeight
+    );
+    if (scaleToGeneration < 1) {
+      const scaledWidth = Math.max(1, Math.floor(frameWidth * scaleToGeneration));
+      const scaledHeight = Math.max(1, Math.floor(frameHeight * scaleToGeneration));
+      logger.info("Frame size clamped to generation size", {
+        animationId,
+        from: { width: frameWidth, height: frameHeight },
+        to: { width: scaledWidth, height: scaledHeight },
+        generationSize: sizeBounds,
+      });
+      frameWidth = scaledWidth;
+      frameHeight = scaledHeight;
+      frameSizeNotes.push(
+        `Scaled frame size to ${scaledWidth}x${scaledHeight} to fit ${sizeBounds.width}x${sizeBounds.height}.`
+      );
+    }
+
+    const estimatedBaseFrameCount = Math.max(
+      1,
+      Number(animation.frameCount ?? expectedFrameCount)
+    );
+    const estimatedSheetFrameCount =
+      loopMode === "pingpong"
+        ? Math.max(1, estimatedBaseFrameCount * 2 - 2)
+        : estimatedBaseFrameCount;
+    const sheetRows = Math.max(
+      1,
+      Math.ceil(estimatedSheetFrameCount / sheetColumns)
+    );
+    const sheetPixels = sheetColumns * sheetRows * frameWidth * frameHeight;
+    const maxSpritesheetPixels = 260_000_000;
+    if (sheetPixels > maxSpritesheetPixels) {
+      const scale = Math.sqrt(maxSpritesheetPixels / sheetPixels);
+      const scaledWidth = Math.max(1, Math.floor(frameWidth * scale));
+      const scaledHeight = Math.max(1, Math.floor(frameHeight * scale));
+      if (scaledWidth < frameWidth || scaledHeight < frameHeight) {
+        logger.info("Frame size clamped for spritesheet limit", {
+          animationId,
+          from: { width: frameWidth, height: frameHeight },
+          to: { width: scaledWidth, height: scaledHeight },
+          frameCount: estimatedSheetFrameCount,
+          columns: sheetColumns,
+          sheetPixels,
+          maxSpritesheetPixels,
+        });
+        frameWidth = scaledWidth;
+        frameHeight = scaledHeight;
+        frameSizeNotes.push(
+          `Scaled frame size to ${scaledWidth}x${scaledHeight} to keep spritesheet under ${maxSpritesheetPixels} pixels.`
+        );
+      }
+    }
 
     const updates: Record<string, unknown> = {};
     const notes: string[] = [];
@@ -460,15 +548,20 @@ async function runGeneration(animationId: string) {
       notes.push(`Adjusted video size to ${size} for ${model}.`);
       updates.generationSize = size;
     }
-    if (seconds !== requestedSeconds) {
+    if (!useSegmentPlan && seconds !== requestedSeconds) {
       notes.push(`Adjusted clip duration to ${seconds}s for ${model}.`);
       updates.generationSeconds = seconds;
     }
-    if (expectedFrameCount !== Number(animation.frameCount ?? expectedFrameCount)) {
+    if (!useSegmentPlan && expectedFrameCount !== Number(animation.frameCount ?? expectedFrameCount)) {
       updates.frameCount = expectedFrameCount;
     }
-    if (String(animation.generationProvider ?? "") !== provider) {
-      updates.generationProvider = provider;
+    if (
+      frameWidth !== requestedFrameWidth ||
+      frameHeight !== requestedFrameHeight
+    ) {
+      updates.frameWidth = frameWidth;
+      updates.frameHeight = frameHeight;
+      notes.push(...frameSizeNotes);
     }
     if (notes.length) {
       updates.generationNote = notes.join(" ");
@@ -480,9 +573,48 @@ async function runGeneration(animationId: string) {
       (updates.generationNote as string | undefined) ??
       (animation.generationNote as string | undefined);
 
+    const totalFrameCount = Math.max(
+      1,
+      Number(animation.frameCount ?? expectedFrameCount)
+    );
+    const segmentPlan = useSegmentPlan
+      ? normalizeSegmentPlan(
+          (segments ?? []).map((segment) => ({
+            ...segment,
+            targetFrameCount: Math.max(
+              1,
+              segment.endFrame - segment.startFrame + 1
+            ),
+          }))
+        )
+      : null;
+    const continuationRequested =
+      Boolean(segmentPlan && segmentPlan.length > 1) &&
+      supportsContinuation &&
+      Boolean(vertexModelId) &&
+      process.env.VEO_CONTINUATION_ENABLED === "true";
+
     const replicateModel = getReplicateModelForVideo(model);
     const useOpenAI = provider === "openai";
-    const useReplicateVideo = provider === "replicate" && replicateModel;
+    const useReplicateVideo = provider === "replicate" && Boolean(replicateModel);
+
+    if (!useOpenAI && !useReplicateVideo) {
+      throw new Error(`Model ${model} is not available for provider ${provider}.`);
+    }
+
+    if (segmentPlan) {
+      const validationError = validateSegmentPlan({
+        segments: segmentPlan,
+        totalFrameCount,
+        extractFps,
+        allowedSeconds: modelConfig.secondsOptions,
+        supportsStartEnd: Boolean(modelConfig.supportsStartEnd),
+        modelLabel: modelConfig.label,
+      });
+      if (validationError) {
+        throw new Error(validationError);
+      }
+    }
 
     if (useOpenAI || useReplicateVideo) {
       if (!referencePath) {
@@ -496,14 +628,6 @@ async function runGeneration(animationId: string) {
       }
 
       const isToonCrafter = modelConfig.id === "tooncrafter";
-      let workingPath = "";
-      let workingSpec: {
-        canvasW: number;
-        canvasH: number;
-        scale: number;
-        roi: { x: number; y: number; w: number; h: number };
-        bgKeyColor: string;
-      };
       let selectedKeyframes: Keyframe[] = [];
       let keyframePaths: string[] = [];
       let effectiveSize = size;
@@ -513,7 +637,41 @@ async function runGeneration(animationId: string) {
         await updateAnimation({ generationNote });
       };
 
-      if (isToonCrafter) {
+      const continuationAvailability = continuationRequested
+        ? getVertexVeoAvailability()
+        : { available: false, config: undefined, reason: "Veo continuation disabled." };
+      const continuationEnabled =
+        continuationRequested &&
+        continuationAvailability.available &&
+        Boolean(continuationAvailability.config) &&
+        Boolean(vertexModelId);
+      if (continuationRequested) {
+        if (continuationEnabled) {
+          await appendGenerationNote(
+            "Veo continuation enabled for segmented generation. End frames are ignored after the first segment."
+          );
+          logger.info("Veo continuation enabled", {
+            animationId,
+            model,
+            provider,
+          });
+        } else {
+          const reason = continuationAvailability.reason ?? "Vertex configuration missing.";
+          await appendGenerationNote(`Veo continuation disabled: ${reason}`);
+          logger.warn("Veo continuation disabled", {
+            animationId,
+            model,
+            provider,
+            reason,
+          });
+        }
+      }
+
+      if (segmentPlan && isToonCrafter) {
+        throw new Error("Segmented generation is not supported for ToonCrafter.");
+      }
+
+      if (isToonCrafter && !segmentPlan) {
         const keyframes = (animation.keyframes as Keyframe[] | undefined) ?? [];
         const usableKeyframes = keyframes
           .filter((kf) => kf.image)
@@ -558,16 +716,46 @@ async function runGeneration(animationId: string) {
             `Using native keyframe size ${maxWidth}x${maxHeight}.`
           );
         }
+
+        const maxToonCrafterDimension = 768;
+        const parsedEffectiveSize = parseSize(effectiveSize, {
+          width: frameWidth,
+          height: frameHeight,
+        });
+        if (
+          parsedEffectiveSize.width > maxToonCrafterDimension ||
+          parsedEffectiveSize.height > maxToonCrafterDimension
+        ) {
+          const scale = Math.min(
+            maxToonCrafterDimension / parsedEffectiveSize.width,
+            maxToonCrafterDimension / parsedEffectiveSize.height
+          );
+          const scaledWidth = Math.max(
+            1,
+            Math.round(parsedEffectiveSize.width * scale)
+          );
+          const scaledHeight = Math.max(
+            1,
+            Math.round(parsedEffectiveSize.height * scale)
+          );
+          effectiveSize = `${scaledWidth}x${scaledHeight}`;
+          await appendGenerationNote(
+            `ToonCrafter max dimension is ${maxToonCrafterDimension}px; scaled to ${scaledWidth}x${scaledHeight}.`
+          );
+          logger.info("ToonCrafter size clamped", {
+            animationId,
+            requestedSize: parsedEffectiveSize,
+            effectiveSize,
+          });
+        }
       }
 
-      const working = await ensureWorkingReference({
+      const { workingPath, workingSpec } = await ensureWorkingReference({
         character,
         referencePath,
         referenceImageId: String(primary?.id ?? "default"),
         generationSize: effectiveSize,
       });
-      workingPath = working.workingPath;
-      workingSpec = working.workingSpec;
 
       const resolvedPromptProfile =
         String(animation.promptProfile ?? "") === "concise" ||
@@ -578,16 +766,22 @@ async function runGeneration(animationId: string) {
         resolvedPromptProfile === "concise"
           ? (animation.promptConcise as string | undefined)
           : (animation.promptVerbose as string | undefined);
-      const prompt =
-        typeof promptOverride === "string" && promptOverride.trim()
-          ? promptOverride
-          : buildVideoPrompt({
-              description: String(animation.description ?? ""),
-              style: String(animation.style ?? ""),
-              artStyle: String(character.style ?? "pixel-art"),
-              bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
-              promptProfile: resolvedPromptProfile,
-            });
+      const forceEmptyPrompt =
+        isToonCrafter && animation.tooncrafterEmptyPrompt === true;
+      if (forceEmptyPrompt) {
+        logger.info("ToonCrafter using empty prompt override", { animationId });
+      }
+      const prompt = forceEmptyPrompt
+        ? ""
+        : typeof promptOverride === "string" && promptOverride.trim()
+        ? promptOverride
+        : buildVideoPrompt({
+            description: String(animation.description ?? ""),
+            style: String(animation.style ?? ""),
+            artStyle: String(character.style ?? "pixel-art"),
+            bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+            promptProfile: resolvedPromptProfile,
+          });
 
       let providerSpritesheetUrl: string | undefined;
       let providerThumbUrl: string | undefined;
@@ -595,6 +789,475 @@ async function runGeneration(animationId: string) {
 
       const generatedDir = storagePath("animations", animationId, "generated");
       await ensureDir(generatedDir);
+
+      if (segmentPlan && segmentPlan.length > 0) {
+        const queueTimestamp = new Date().toISOString();
+        let queueItems: GenerationQueueItem[] = segmentPlan.map((segment) => ({
+          id: segment.id,
+          status: "queued",
+          startFrame: segment.startFrame,
+          endFrame: segment.endFrame,
+          targetFrameCount: segment.targetFrameCount,
+          durationSeconds: segment.durationSeconds,
+          model,
+          provider,
+          startImageUrl: segment.startImageUrl,
+          endImageUrl: segment.endImageUrl ?? null,
+          progress: 0,
+          createdAt: queueTimestamp,
+        }));
+
+        await updateAnimation({
+          generationQueue: queueItems,
+          generationJob: undefined,
+        });
+
+        const updateQueueItem = async (
+          id: string,
+          patch: Partial<GenerationQueueItem>
+        ) => {
+          const updatedAt = new Date().toISOString();
+          queueItems = queueItems.map((item) =>
+            item.id === id ? { ...item, ...patch, updatedAt } : item
+          );
+          await updateAnimation({ generationQueue: queueItems });
+        };
+
+        const rawFramesDir = path.join(generatedDir, "frames_raw");
+        const framesDir = path.join(generatedDir, "frames");
+        await fs.rm(rawFramesDir, { recursive: true, force: true });
+        await fs.rm(framesDir, { recursive: true, force: true });
+        await fs.mkdir(rawFramesDir, { recursive: true });
+        await fs.mkdir(framesDir, { recursive: true });
+
+        const referenceUrl = String(primary?.url ?? "");
+        const loopRequested =
+          segmentPlan.length > 1 ? false : animation.generationLoop === true;
+
+        const normalizeProgress = (value?: number) => {
+          if (typeof value !== "number") return null;
+          return Math.round(value > 1 ? value : value * 100);
+        };
+
+        logger.info("Segmented generation starting", {
+          animationId,
+          segments: segmentPlan.length,
+          model,
+          provider,
+        });
+        let loggedNegativePrompt = false;
+        let previousSegmentVideoPath: string | null = null;
+        const continuationFrameLimit = Math.round(
+          VEO_CONTINUATION_SECONDS * extractFps
+        );
+
+        for (let index = 0; index < segmentPlan.length; index += 1) {
+          const segment = segmentPlan[index];
+          try {
+            logger.info("Generating segment", {
+              animationId,
+              segmentId: segment.id,
+              startFrame: segment.startFrame,
+              endFrame: segment.endFrame,
+              durationSeconds: segment.durationSeconds,
+            });
+            await updateQueueItem(segment.id, {
+              status: "in_progress",
+              progress: 0,
+            });
+
+            const startImagePath = await resolveSegmentImagePath({
+              animationId,
+              imageUrl: segment.startImageUrl,
+              referenceUrl,
+              workingPath,
+              generationSize: size,
+              bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+              kind: "start",
+            });
+            const endImagePath = segment.endImageUrl
+              ? await resolveSegmentImagePath({
+                  animationId,
+                  imageUrl: segment.endImageUrl,
+                  referenceUrl,
+                  workingPath,
+                  generationSize: size,
+                  bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+                  kind: "end",
+                })
+              : null;
+
+            const videoFilename = `video_segment_${index + 1}_${Date.now()}.mp4`;
+            const videoPath = path.join(generatedDir, videoFilename);
+            let providerSpritesheetUrl: string | undefined;
+            let providerThumbUrl: string | undefined;
+            const aspectRatio = getVideoAspectRatio(size);
+            const resolution = getVideoResolution(size);
+            const continuationCandidate =
+              continuationEnabled &&
+              index > 0 &&
+              segment.targetFrameCount <= continuationFrameLimit;
+            if (
+              continuationEnabled &&
+              index > 0 &&
+              segment.targetFrameCount > continuationFrameLimit
+            ) {
+              logger.warn("Veo continuation skipped (segment too long)", {
+                animationId,
+                segmentId: segment.id,
+                targetFrameCount: segment.targetFrameCount,
+                continuationFrameLimit,
+              });
+            }
+
+            if (continuationCandidate) {
+              if (!previousSegmentVideoPath) {
+                throw new Error(
+                  "Veo continuation requires a previous segment video."
+                );
+              }
+              if (!vertexModelId || !continuationAvailability.config) {
+                throw new Error(
+                  "Veo continuation is enabled but Vertex configuration is missing."
+                );
+              }
+              const normalizedPath = await normalizeVeoContinuationVideo({
+                inputPath: previousSegmentVideoPath,
+                outputDir: generatedDir,
+                aspectRatio,
+                resolution,
+              });
+              try {
+                const continuationBuffer = await generateVertexVeoContinuation({
+                  model: vertexModelId,
+                  prompt,
+                  aspectRatio,
+                  resolution,
+                  durationSeconds: VEO_CONTINUATION_SECONDS,
+                  negativePrompt: supportsNegativePrompt
+                    ? generationNegativePrompt
+                    : undefined,
+                  inputVideoPath: normalizedPath,
+                  gcsPrefix: `veo-continuation/${animationId}/segments/${segment.id}`,
+                  config: continuationAvailability.config,
+                });
+                await fs.writeFile(videoPath, continuationBuffer);
+                logger.info("Veo continuation segment generated", {
+                  animationId,
+                  segmentId: segment.id,
+                  model: vertexModelId,
+                });
+              } finally {
+                await fs.rm(normalizedPath, { force: true });
+              }
+            } else if (useOpenAI) {
+              const job = await createVideoJob({
+                prompt,
+                model,
+                seconds: segment.durationSeconds,
+                size,
+                inputReferencePath: startImagePath,
+              });
+              const initialProgress = normalizeProgress(job.progress);
+              if (initialProgress !== null) {
+                await updateQueueItem(segment.id, { progress: initialProgress });
+              }
+
+              const finalJob = await pollVideoJob({
+                videoId: job.id,
+                onUpdate: async (update) => {
+                  const progress = normalizeProgress(update.progress);
+                  if (progress !== null) {
+                    await updateQueueItem(segment.id, { progress });
+                  }
+                },
+              });
+
+              const videoBuffer = await downloadVideoContent({ videoId: job.id });
+              await fs.writeFile(videoPath, videoBuffer);
+
+              try {
+                const spriteBuffer = await downloadVideoContent({
+                  videoId: job.id,
+                  variant: "spritesheet",
+                });
+                const spriteName = `provider_spritesheet_${Date.now()}.png`;
+                const spritePath = path.join(generatedDir, spriteName);
+                await fs.writeFile(spritePath, spriteBuffer);
+                providerSpritesheetUrl = `/api/storage/animations/${animationId}/generated/${spriteName}`;
+              } catch {
+                // optional
+              }
+
+              try {
+                const thumbBuffer = await downloadVideoContent({
+                  videoId: job.id,
+                  variant: "thumbnail",
+                });
+                const thumbName = `thumbnail_${Date.now()}.png`;
+                const thumbPath = path.join(generatedDir, thumbName);
+                await fs.writeFile(thumbPath, thumbBuffer);
+                providerThumbUrl = `/api/storage/animations/${animationId}/generated/${thumbName}`;
+              } catch {
+                // optional
+              }
+            } else if (useReplicateVideo && replicateModel) {
+              const supportsStartEnd = Boolean(modelConfig.supportsStartEnd);
+              const supportsLoop = Boolean(modelConfig.supportsLoop);
+              const startImageKey = modelConfig.startImageKey;
+              const endImageKey = modelConfig.endImageKey;
+              const resolutionKey = modelConfig.replicateResolutionKey;
+              const supportsAudio = Boolean(modelConfig.replicateSupportsAudio);
+              let effectiveEndImagePath: string | null = null;
+              if (supportsStartEnd && (!loopRequested || !supportsLoop)) {
+                if (loopRequested && !supportsLoop) {
+                  effectiveEndImagePath = startImagePath;
+                } else if (endImagePath) {
+                  effectiveEndImagePath = endImagePath;
+                }
+              }
+
+              const input: Record<string, unknown> = {
+                prompt,
+                duration: segment.durationSeconds,
+                aspect_ratio: aspectRatio,
+              };
+
+              if (supportsNegativePrompt && generationNegativePrompt) {
+                input.negative_prompt = generationNegativePrompt;
+                if (!loggedNegativePrompt) {
+                  logger.info("Using negative prompt for segmented generation", {
+                    animationId,
+                    model,
+                    provider,
+                  });
+                  loggedNegativePrompt = true;
+                }
+              }
+
+              if (resolutionKey === "quality") {
+                input.quality = resolution;
+              } else if (resolutionKey === "resolution") {
+                input.resolution = resolution;
+              }
+              if (supportsAudio) {
+                input.generate_audio = false;
+              }
+              if (supportsLoop && loopRequested) {
+                input.loop = true;
+              }
+              const clampedStartImagePath = startImageKey
+                ? await clampInputImageForModel({
+                    animationId,
+                    model,
+                    generationSize: size,
+                    imagePath: startImagePath,
+                    kind: "start",
+                  })
+                : startImagePath;
+              const clampedEndImagePath =
+                supportsStartEnd && endImageKey && effectiveEndImagePath
+                  ? await clampInputImageForModel({
+                      animationId,
+                      model,
+                      generationSize: size,
+                      imagePath: effectiveEndImagePath,
+                      kind: "end",
+                    })
+                  : effectiveEndImagePath;
+              if (startImageKey) {
+                input[startImageKey] = await fileToDataUrl(clampedStartImagePath);
+              }
+              if (supportsStartEnd && endImageKey && clampedEndImagePath) {
+                input[endImageKey] = await fileToDataUrl(clampedEndImagePath);
+              }
+
+              const prediction = await createPrediction({
+                model: replicateModel,
+                input,
+              });
+
+              const finalPrediction = await waitForPrediction(prediction.id);
+              const output = finalPrediction.output as
+                | string
+                | string[]
+                | { url?: string }
+                | null
+                | undefined;
+              const outputUrl =
+                typeof output === "string"
+                  ? output
+                  : Array.isArray(output)
+                  ? output[0]
+                  : output?.url;
+              if (!outputUrl) {
+                throw new Error("No output returned from Replicate.");
+              }
+
+              const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
+              if (!outputResponse.ok) {
+                throw new Error("Failed to download generated video.");
+              }
+              const outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
+              await fs.writeFile(videoPath, outputBuffer);
+            } else {
+              throw new Error(`Model ${model} is not available for provider ${provider}.`);
+            }
+
+            previousSegmentVideoPath = videoPath;
+
+            await updateQueueItem(segment.id, {
+              status: "completed",
+              progress: 100,
+              outputs: {
+                videoUrl: `/api/storage/animations/${animationId}/generated/${videoFilename}`,
+                spritesheetUrl: providerSpritesheetUrl,
+                thumbnailUrl: providerThumbUrl,
+              },
+            });
+
+            const tempDir = path.join(generatedDir, `frames_raw_segment_${index + 1}`);
+            await extractVideoFrames({
+              videoPath,
+              outputDir: tempDir,
+              fps: extractFps,
+              roi: workingSpec.roi,
+              frameWidth,
+              frameHeight,
+            });
+
+            const rawFiles = sortFrameFiles(await fs.readdir(tempDir));
+            if (rawFiles.length === 0) {
+              throw new Error("No frames extracted from segmented video.");
+            }
+
+            const selection = selectFrameIndices(
+              rawFiles.length,
+              segment.targetFrameCount
+            );
+            if (selection.length !== segment.targetFrameCount) {
+              throw new Error("Segment frame count mismatch after extraction.");
+            }
+
+            const skipFirst = index > 0;
+            const filesToCopy = skipFirst ? selection.slice(1) : selection;
+            const expectedCopyCount =
+              segment.targetFrameCount - (skipFirst ? 1 : 0);
+            if (filesToCopy.length !== expectedCopyCount) {
+              throw new Error("Segment frame selection mismatch.");
+            }
+
+            const baseIndex = skipFirst
+              ? segment.startFrame + 1
+              : segment.startFrame;
+            for (let offset = 0; offset < filesToCopy.length; offset += 1) {
+              const rawName = rawFiles[filesToCopy[offset]];
+              const outputIndex = baseIndex + offset;
+              if (outputIndex > segment.endFrame) {
+                throw new Error("Segment frame overflow.");
+              }
+              const outputName = `frame_${String(outputIndex).padStart(3, "0")}.png`;
+              const outputPath = path.join(rawFramesDir, outputName);
+              await fs.copyFile(path.join(tempDir, rawName), outputPath);
+            }
+            await fs.rm(tempDir, { recursive: true, force: true });
+            logger.info("Segment complete", {
+              animationId,
+              segmentId: segment.id,
+              framesCopied: filesToCopy.length,
+            });
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : "Segment generation failed.";
+            logger.error("Segment generation failed", {
+              animationId,
+              segmentId: segment.id,
+              message,
+            });
+            await updateQueueItem(segment.id, { status: "failed", error: message });
+            throw error;
+          }
+        }
+
+        const rawFiles = sortFrameFiles(await fs.readdir(rawFramesDir));
+        if (rawFiles.length === 0) {
+          throw new Error("No frames extracted from segmented videos.");
+        }
+        if (rawFiles.length < totalFrameCount) {
+          throw new Error("Segmented generation did not produce enough frames.");
+        }
+
+        const effectiveLoopMode =
+          segmentPlan.length > 1 ? "loop" : loopMode;
+        if (segmentPlan.length > 1 && loopMode === "pingpong") {
+          const note = "Ping-pong output disabled for segmented generation.";
+          generationNote = generationNote ? `${generationNote} ${note}` : note;
+        }
+
+        const baseSequence = rawFiles;
+        const sequence =
+          effectiveLoopMode === "pingpong"
+            ? baseSequence.concat(baseSequence.slice(1, -1).reverse())
+            : baseSequence;
+
+        const generatedFrames: GeneratedFrame[] = [];
+        for (let index = 0; index < sequence.length; index += 1) {
+          const inputName = sequence[index];
+          const inputPath = path.join(rawFramesDir, inputName);
+          const outputName = `frame_${String(index).padStart(3, "0")}.png`;
+          const outputPath = path.join(framesDir, outputName);
+          await fs.copyFile(inputPath, outputPath);
+          generatedFrames.push({
+            frameIndex: index,
+            url: `/api/storage/animations/${animationId}/generated/frames/${outputName}`,
+            isKeyframe: false,
+            generatedAt: new Date().toISOString(),
+            source: model,
+          });
+        }
+
+        const layout = buildSpritesheetLayout({
+          frameWidth,
+          frameHeight,
+          columns: sheetColumns,
+          frameCount: generatedFrames.length,
+        });
+
+        const spritesheetName = `spritesheet_${Date.now()}_segment.png`;
+        const spritesheetPath = path.join(generatedDir, spritesheetName);
+        await composeSpritesheet({
+          framesDir,
+          outputPath: spritesheetPath,
+          layout,
+        });
+
+        const updated = {
+          ...animation,
+          status: "complete",
+          generationNote,
+          fps: extractFps,
+          extractFps,
+          frameWidth,
+          frameHeight,
+          loopMode: effectiveLoopMode,
+          sheetColumns,
+          actualFrameCount: generatedFrames.length,
+          generatedFrames,
+          generatedSpritesheet: `/api/storage/animations/${animationId}/generated/${spritesheetName}`,
+          spritesheetLayout: layout,
+          sourceVideoUrl: undefined,
+          sourceProviderSpritesheetUrl: undefined,
+          sourceThumbnailUrl: undefined,
+          generationJob: undefined,
+        };
+
+        await writeJson(filePath, { ...updated, updatedAt: new Date().toISOString() });
+        const { animation: versioned } = await createAnimationVersion(animationId, {
+          source: "generation",
+        });
+        return versioned;
+      }
+
       const videoFilename = `video_${Date.now()}.mp4`;
       const videoPath = path.join(generatedDir, videoFilename);
 
@@ -669,12 +1332,18 @@ async function runGeneration(animationId: string) {
             throw new Error("ToonCrafter requires at least two keyframes with images.");
           }
 
-          const parsedSize = parseSize(effectiveSize);
+          const parsedSize = parseSize(effectiveSize, { width: 1024, height: 1792 });
           const colorCorrection =
             typeof animation.tooncrafterColorCorrection === "boolean"
               ? animation.tooncrafterColorCorrection
               : true;
           const seedValue = Number(animation.tooncrafterSeed);
+          const tooncrafterNegativePrompt =
+            typeof animation.tooncrafterNegativePrompt === "string"
+              ? animation.tooncrafterNegativePrompt.trim()
+              : "";
+          const negativePrompt =
+            tooncrafterNegativePrompt || (supportsNegativePrompt ? generationNegativePrompt : "");
 
           const input: Record<string, unknown> = {
             prompt,
@@ -682,6 +1351,14 @@ async function runGeneration(animationId: string) {
             color_correction: colorCorrection,
             loop: animation.generationLoop === true,
           };
+
+          if (negativePrompt) {
+            input.negative_prompt = negativePrompt;
+            logger.info("Using negative prompt for ToonCrafter", {
+              animationId,
+              model,
+            });
+          }
 
           if (
             Number.isFinite(parsedSize.width) &&
@@ -797,6 +1474,15 @@ async function runGeneration(animationId: string) {
             aspect_ratio: aspectRatio,
           };
 
+          if (supportsNegativePrompt && generationNegativePrompt) {
+            input.negative_prompt = generationNegativePrompt;
+            logger.info("Using negative prompt for generation", {
+              animationId,
+              model,
+              provider,
+            });
+          }
+
           if (resolutionKey === "quality") {
             input.quality = resolution;
           } else if (resolutionKey === "resolution") {
@@ -808,13 +1494,31 @@ async function runGeneration(animationId: string) {
           if (supportsLoop && loopRequested) {
             input.loop = true;
           }
-          if (startImageKey && startImagePath) {
-            input[startImageKey] = await fileToDataUrl(startImagePath);
+          const clampedStartImagePath =
+            startImageKey && startImagePath
+              ? await clampInputImageForModel({
+                  animationId,
+                  model,
+                  generationSize: size,
+                  imagePath: startImagePath,
+                  kind: "start",
+                })
+              : startImagePath;
+          const clampedEndImagePath =
+            supportsStartEnd && endImageKey && endImagePath
+              ? await clampInputImageForModel({
+                  animationId,
+                  model,
+                  generationSize: size,
+                  imagePath: endImagePath,
+                  kind: "end",
+                })
+              : endImagePath;
+          if (startImageKey && clampedStartImagePath) {
+            input[startImageKey] = await fileToDataUrl(clampedStartImagePath);
           }
-          const shouldSendEndImage =
-            supportsStartEnd && endImageKey && endImagePath;
-          if (shouldSendEndImage) {
-            input[endImageKey] = await fileToDataUrl(endImagePath);
+          if (supportsStartEnd && endImageKey && clampedEndImagePath) {
+            input[endImageKey] = await fileToDataUrl(clampedEndImagePath);
           }
 
           const prediction = await createPrediction({
@@ -890,7 +1594,6 @@ async function runGeneration(animationId: string) {
         const outputName = `frame_${String(index).padStart(3, "0")}.png`;
         const outputPath = path.join(framesDir, outputName);
         await fs.copyFile(inputPath, outputPath);
-        await keyOutMagenta(outputPath, workingSpec.bgKeyColor ?? DEFAULT_BG_KEY);
         generatedFrames.push({
           frameIndex: index,
           url: `/api/storage/animations/${animationId}/generated/frames/${outputName}`,
@@ -900,7 +1603,7 @@ async function runGeneration(animationId: string) {
         });
       }
 
-      const layout = buildLayout({
+      const layout = buildSpritesheetLayout({
         frameWidth,
         frameHeight,
         columns: sheetColumns,
@@ -952,119 +1655,10 @@ async function runGeneration(animationId: string) {
       return versioned;
     }
 
-    // Fallback: Replicate spritesheet generation (legacy)
-    const prompt = `${animation.description ?? ""}, pixel art sprite, ${animation.style ?? "walk"} animation`;
-    const styleKey = STYLE_MAP[(animation.style as AnimationStyle) ?? "walk"] ?? "four_angle_walking";
-    const spriteSize = Number(animation.spriteSize ?? 48);
-    let generationSize = Number.isFinite(spriteSize) ? Math.round(spriteSize) : 48;
-
-    if (styleKey === "vfx") {
-      generationSize = Math.min(96, Math.max(24, generationSize));
-    } else {
-      const allowedSizes = STYLE_SIZE_OPTIONS[styleKey] ?? [48];
-      if (!allowedSizes.includes(generationSize)) {
-        generationSize = allowedSizes[0];
-      }
-    }
-
-    let outputBuffer: Buffer | null = null;
-    let usedFallback = false;
-    let outputExt = ".png";
-
-    if (process.env.REPLICATE_API_TOKEN) {
-      const input: Record<string, unknown> = {
-        prompt,
-        style: styleKey,
-        width: generationSize,
-        height: generationSize,
-        return_spritesheet: true,
-      };
-
-      if (referencePath) {
-        input.input_image = await fileToDataUrl(referencePath);
-      }
-
-      const prediction = await runReplicateModel({
-        model: RD_ANIMATION_MODEL,
-        version: RD_ANIMATION_VERSION,
-        input,
-      });
-
-      const output = prediction.output;
-      const outputUrl =
-        (Array.isArray(output) ? output[0] : output) as string | undefined;
-
-      if (!outputUrl) {
-        throw new Error("No output returned from Replicate.");
-      }
-
-      const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
-      if (!outputResponse.ok) {
-        throw new Error("Failed to download generated asset.");
-      }
-      outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
-    } else if (referencePath) {
-      outputBuffer = await fs.readFile(referencePath);
-      outputExt = path.extname(referencePath) || ".png";
-      usedFallback = true;
-    }
-
-    if (!outputBuffer) {
-      throw new Error("No generation output available.");
-    }
-
-    const filenameOut = `spritesheet_${Date.now()}${usedFallback ? "_fallback" : ""}${outputExt}`;
-    const outputPath = storagePath("animations", animationId, "generated", filenameOut);
-    await fs.writeFile(outputPath, outputBuffer);
-
-    let generatedFrames = (animation.generatedFrames as Array<Record<string, unknown>> | undefined) ?? [];
-    let spritesheetLayout = animation.spritesheetLayout;
-    let actualFrameCount = animation.actualFrameCount;
-
-    if (outputExt.toLowerCase() === ".png") {
-      try {
-        const framesDir = storagePath("animations", animationId, "generated", "frames");
-        const { layout, frames } = await extractFrames({
-          spritesheetPath: outputPath,
-          outputDir: framesDir,
-          frameSize: generationSize,
-        });
-
-        spritesheetLayout = layout;
-        actualFrameCount = frames.length;
-        generatedFrames = frames.map((frame) => ({
-          frameIndex: frame.frameIndex,
-          url: `/api/storage/animations/${animationId}/generated/frames/${frame.filename}`,
-          isKeyframe: false,
-          generatedAt: new Date().toISOString(),
-          source: "rd-animation",
-        }));
-      } catch {
-        // If frame extraction fails, keep spritesheet only.
-      }
-    }
-
-    const updated = {
-      ...animation,
-      status: "complete",
-      generatedSpritesheet: `/api/storage/animations/${animationId}/generated/${filenameOut}`,
-      generationNote: usedFallback
-        ? "Fallback sprite used (missing REPLICATE_API_TOKEN)."
-        : undefined,
-      generatedFrames,
-      spritesheetLayout,
-      actualFrameCount,
-    };
-
-    await writeJson(filePath, { ...updated, updatedAt: new Date().toISOString() });
-    const { animation: versioned } = await createAnimationVersion(animationId, {
-      source: "generation",
-    });
-    return versioned;
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Generation failed.";
-    console.error(`[generate] ${animationId} failed: ${message}`);
+    logger.error("Generation failed", { animationId, message });
     const failed = {
       ...animation,
       status: "failed",
@@ -1083,6 +1677,52 @@ async function runGeneration(animationId: string) {
 export async function POST(request: Request) {
   const payload = await request.json().catch(() => ({}));
   const { animationId, async: runAsync } = payload ?? {};
+  const rawSegments = Array.isArray(payload?.segments) ? payload.segments : null;
+  const parsedSegments: SegmentInput[] = [];
+  if (rawSegments) {
+    for (let index = 0; index < rawSegments.length; index += 1) {
+      const raw = rawSegments[index];
+      if (!raw || typeof raw !== "object") {
+        return Response.json(
+          { error: "Invalid segment payload." },
+          { status: 400 }
+        );
+      }
+      const id =
+        typeof raw.id === "string" && raw.id.trim().length > 0
+          ? raw.id
+          : `segment-${index + 1}`;
+      const startFrame = Number(raw.startFrame);
+      const endFrame = Number(raw.endFrame);
+      const durationSeconds = Number(raw.durationSeconds);
+      const startImageUrl =
+        typeof raw.startImageUrl === "string" ? raw.startImageUrl : "";
+      const endImageUrl =
+        typeof raw.endImageUrl === "string" ? raw.endImageUrl : null;
+      if (
+        !Number.isFinite(startFrame) ||
+        !Number.isFinite(endFrame) ||
+        !Number.isFinite(durationSeconds) ||
+        !Number.isInteger(startFrame) ||
+        !Number.isInteger(endFrame) ||
+        startImageUrl.length === 0
+      ) {
+        return Response.json(
+          { error: "Invalid segment payload." },
+          { status: 400 }
+        );
+      }
+      parsedSegments.push({
+        id,
+        startFrame,
+        endFrame,
+        durationSeconds,
+        startImageUrl,
+        endImageUrl,
+      });
+    }
+  }
+  const segmentInputs = parsedSegments.length > 0 ? parsedSegments : undefined;
 
   if (!animationId) {
     return Response.json({ error: "Missing animationId." }, { status: 400 });
@@ -1099,9 +1739,23 @@ export async function POST(request: Request) {
   }
 
   const model = String(animation.generationModel ?? "sora-2");
-  const requestedProvider = String(animation.generationProvider ?? "");
-  const modelProvider = getVideoProviderForModel(model);
-  const provider = requestedProvider === "replicate" ? "replicate" : modelProvider;
+  const requestedProvider = String(animation.generationProvider ?? "").trim();
+  if (requestedProvider !== "openai" && requestedProvider !== "replicate") {
+    return Response.json(
+      { error: "Generation provider is required. Select OpenAI or Replicate." },
+      { status: 400 }
+    );
+  }
+  const modelProvider = getVideoModelConfig(model).provider;
+  if (requestedProvider !== modelProvider) {
+    return Response.json(
+      {
+        error: `Generation provider (${requestedProvider}) does not match model provider (${modelProvider}).`,
+      },
+      { status: 400 }
+    );
+  }
+  const provider = requestedProvider;
   if (provider === "openai" && !process.env.OPENAI_API_KEY?.trim()) {
     return Response.json(
       {
@@ -1131,12 +1785,12 @@ export async function POST(request: Request) {
   await writeJson(filePath, queued);
 
   if (runAsync) {
-    void runGeneration(animationId).catch(() => null);
+    void runGeneration(animationId, segmentInputs).catch(() => null);
     return Response.json({ animation: queued, queued: true });
   }
 
   try {
-    const updated = await runGeneration(animationId);
+    const updated = await runGeneration(animationId, segmentInputs);
     return Response.json({ animation: updated });
   } catch (error) {
     return Response.json(
