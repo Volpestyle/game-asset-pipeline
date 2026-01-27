@@ -329,5 +329,4 @@ Use these example outputs to better understand the types of inputs the model acc
 > 
 > For faster image generation, animations, or tileset generation, see these other Retro Diffusion models:
 > [RD Fast](https://replicate.com/retro-diffusion/rd-fast)
-> [RD Animation](https://replicate.com/retro-diffusion/rd-animation)
 > [RD Tile](https://replicate.com/retro-diffusion/rd-tile)

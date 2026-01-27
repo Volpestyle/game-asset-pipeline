@@ -1,5 +1,10 @@
 Below is a practical, end‑to‑end guide for building a character → animation → generation → timeline editor → looping spritesheet export workflow, tuned for your 253×504 sprite and for Web + React Native.
 
+**Current app notes (January 2026)**:
+- Provider selection is explicit (OpenAI or Replicate) and required before generation.
+- Default loop mode is **loop** with the end frame matching the start frame; ping‑pong is optional.
+- Replicate video models (Ray2, PixVerse v5, ToonCrafter, Veo 3.1/fast) are user-facing alongside OpenAI Sora.
+
 I’ll center the “AI motion” stage around OpenAI’s Sora Video API because it:
 	•	is designed for async jobs (easy to integrate into a “Generate” button + progress UI)  ￼
 	•	supports downloading different assets from one job, including a spritesheet variant (video | thumbnail | spritesheet)  ￼
@@ -34,7 +39,7 @@ Stage C — Frame extraction + “pixel enforcement”
 
 After the job completes, your worker:
 	1.	downloads the MP4 (and optionally the spritesheet/thumbnail)  ￼
-	2.	extracts frames at your desired sprite FPS (e.g., 6–12 fps)
+	2.	extracts frames at your desired sprite FPS (e.g., 6–24 fps)
 	3.	crops the character region, scales down to 253×504, disables smoothing (nearest neighbor), keys out magenta for transparency
 	4.	packs frames into a looping spritesheet + exports metadata JSON
 	5.	stores raw frames in frames_raw so loop mode can be rebuilt without re-generating
@@ -256,7 +261,7 @@ ffmpeg -i input.mp4 \
   -vf "crop=506:1008:107:136,scale=253:504:flags=neighbor,fps=8" \
   out/frame_%03d.png
 
-You can set fps here to your extraction FPS (e.g., 6–12). This is separate from the source video FPS.
+You can set fps here to your extraction FPS (e.g., 6–24). This is separate from the source video FPS.
 
 7.4 Key out the background for transparency
 
@@ -437,7 +442,7 @@ Pipeline stages:
 	2.	Extract frames
 	3.	Stabilize
 	4.	Pixel enforce (nearest + palette)
-	5.	Loop finalize (pingpong or loop-close)
+	5.	Loop finalize (end frame = start frame, or pingpong)
 	6.	Pack spritesheet
 
 Then later, you can add:
@@ -461,13 +466,13 @@ Generation
 	•	prompt includes pixel + loop + magenta background constraints
 
 Extraction
-	•	extractFps = 6 → 4 sec gives ~24 frames (nice for sprites)
-	•	loopMode = pingpong (makes loops easy)
+	•	extractFps = 12 → 4 sec gives ~48 frames (nice for sprites)
+	•	loopMode = loop (end frame = start frame; pingpong optional)
 	•	stabilization ON (optional but recommended)
 
 Export
-	•	spritesheet columns = 6 (→ 24 frames = 4 rows)
-	•	JSON metadata includes fps: 6, frameW: 253, frameH: 504
+	•	spritesheet columns = 6 (→ 48 frames = 8 rows)
+	•	JSON metadata includes fps: 12, frameW: 253, frameH: 504
 
 ⸻
 

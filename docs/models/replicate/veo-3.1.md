@@ -194,3 +194,21 @@ Use these example outputs to better understand the types of inputs the model acc
 > ---
 > 
 > **Try the model yourself on the [Replicate Playground](https://replicate.com/google/nano-banana)** to explore its capabilities and see how it can enhance your creative workflow.
+
+---
+
+## Continuation (Vertex AI)
+
+Veo continuation (video extend) is **not** exposed via Replicate. Google provides this feature through Vertex AI using the Veo 3.1 preview models.
+
+Key constraints for Vertex continuation:
+- Input video must be MP4, 1-30 seconds, 24 FPS, and either 720p or 1080p in 16:9 or 9:16.
+- Output is fixed at 7 seconds, 24 FPS, and 720p.
+- Video input is mutually exclusive with image + last-frame conditioning.
+
+App integration notes:
+- Set VEO_CONTINUATION_ENABLED=true to opt-in.
+- Provide Vertex credentials (for example GOOGLE_APPLICATION_CREDENTIALS) and a project ID via VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT.
+- If VEO_CONTINUATION_BUCKET is set, inputs are uploaded to GCS; otherwise inline base64 video is used.
+
+Reference: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/video/extend-a-veo-video

@@ -1,4 +1,7 @@
 export type VideoProvider = "openai" | "replicate";
+type VertexVeoModelId =
+  | "veo-3.1-generate-preview"
+  | "veo-3.1-fast-generate-preview";
 export type VideoModelId =
   | "sora-2"
   | "sora-2-pro"
@@ -16,8 +19,11 @@ type VideoModelConfig = {
   secondsOptions: number[];
   promptProfile?: "verbose" | "concise";
   replicateModel?: string;
+  vertexModelId?: VertexVeoModelId;
   supportsStartEnd?: boolean;
   supportsLoop?: boolean;
+  supportsContinuation?: boolean;
+  supportsNegativePrompt?: boolean;
   startImageKey?: string;
   endImageKey?: string;
   replicateResolutionKey?: "quality" | "resolution" | null;
@@ -76,6 +82,7 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     replicateModel: "pixverse/pixverse-v5",
     supportsStartEnd: true,
     supportsLoop: false,
+    supportsNegativePrompt: true,
     startImageKey: "image",
     endImageKey: "last_frame_image",
     replicateResolutionKey: "quality",
@@ -88,11 +95,8 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     sizeOptions: [
       "512x512",
       "768x768",
-      "1024x1024",
-      "1280x720",
-      "720x1280",
-      "1920x1080",
-      "1080x1920",
+      "768x432",
+      "432x768",
       "native",
     ],
     secondsOptions: [4, 6, 8],
@@ -100,6 +104,7 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     replicateModel: "fofr/tooncrafter",
     supportsStartEnd: false,
     supportsLoop: false,
+    supportsNegativePrompt: true,
     replicateResolutionKey: null,
     replicateSupportsAudio: false,
   },
@@ -111,8 +116,11 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     secondsOptions: [4, 6, 8],
     promptProfile: "concise",
     replicateModel: "google/veo-3.1-fast",
+    vertexModelId: "veo-3.1-fast-generate-preview",
     supportsStartEnd: true,
     supportsLoop: false,
+    supportsContinuation: true,
+    supportsNegativePrompt: true,
     startImageKey: "image",
     endImageKey: "last_frame",
     replicateResolutionKey: "resolution",
@@ -126,8 +134,11 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     secondsOptions: [4, 6, 8],
     promptProfile: "concise",
     replicateModel: "google/veo-3.1",
+    vertexModelId: "veo-3.1-generate-preview",
     supportsStartEnd: true,
     supportsLoop: false,
+    supportsContinuation: true,
+    supportsNegativePrompt: true,
     startImageKey: "image",
     endImageKey: "last_frame",
     replicateResolutionKey: "resolution",
@@ -177,12 +188,24 @@ export function getReplicateModelForVideo(model?: string): string | undefined {
   return getVideoModelConfig(model).replicateModel;
 }
 
+export function getVertexModelForVideo(model?: string): string | undefined {
+  return getVideoModelConfig(model).vertexModelId;
+}
+
 export function getVideoModelSupportsStartEnd(model?: string): boolean {
   return Boolean(getVideoModelConfig(model).supportsStartEnd);
 }
 
 export function getVideoModelSupportsLoop(model?: string): boolean {
   return Boolean(getVideoModelConfig(model).supportsLoop);
+}
+
+export function getVideoModelSupportsContinuation(model?: string): boolean {
+  return Boolean(getVideoModelConfig(model).supportsContinuation);
+}
+
+export function getVideoModelSupportsNegativePrompt(model?: string): boolean {
+  return Boolean(getVideoModelConfig(model).supportsNegativePrompt);
 }
 
 export function getVideoModelStartImageKey(model?: string): string | undefined {
