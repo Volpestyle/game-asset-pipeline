@@ -51,7 +51,8 @@ Upload character reference images → Define animation parameters → Generate c
 - **Styling**: Tailwind CSS + shadcn/ui
 - **AI Backend**:
   - Primary: OpenAI Sora Video API (image → video → frames)
-  - Secondary: Replicate (rd-animation legacy fallback, rd-fast/rd-plus for keyframe interpolation)
+  - Secondary: Replicate video models (Ray2, PixVerse v5, ToonCrafter, Veo 3.1/fast)
+  - Keyframe refinement: Replicate rd-fast/rd-plus and nano-banana-pro
 - **Storage**: Local filesystem (MVP), S3-compatible (future)
 
 ## Project Structure
@@ -106,12 +107,12 @@ OPENAI_API_KEY=            # OpenAI API key (Sora video generation)
 REPLICATE_API_TOKEN=       # Replicate API token
 FAL_KEY=                   # Fal.ai API key (planned/unused)
 GOOGLE_AI_API_KEY=         # Gemini API key (planned/unused)
-RD_ANIMATION_VERSION=      # Replicate rd-animation model version (optional)
-RD_ANIMATION_MODEL=        # Replicate rd-animation model (optional, defaults to retro-diffusion/rd-animation)
 RD_FAST_MODEL=             # Replicate rd-fast model (optional, defaults to retro-diffusion/rd-fast)
 RD_FAST_VERSION=           # Replicate rd-fast version (optional)
 RD_PLUS_MODEL=             # Replicate rd-plus model (optional, defaults to retro-diffusion/rd-plus)
 RD_PLUS_VERSION=           # Replicate rd-plus version (optional)
+NANO_BANANA_MODEL=         # Replicate nano-banana-pro model (optional, defaults to google/nano-banana-pro)
+NANO_BANANA_VERSION=       # Replicate nano-banana-pro version (optional)
 LOG_LEVEL=                 # Log level: debug | info | warn | error (default: info)
 LOG_COLOR=                 # Enable ANSI colors in logs (default: true)
 ```
@@ -127,11 +128,13 @@ storage/
 ├── characters/{id}/working/            # working reference + spec JSON
 └── animations/{id}/
     ├── animation.json
+    ├── generation/                     # start/end frame inputs + normalized variants
     ├── generated/
     │   ├── frames_raw/                 # extracted frames (pre-loop)
     │   └── frames/                     # final frames (loop applied)
     ├── exports/
-    └── keyframes/
+    ├── keyframes/
+    └── versions/{versionId}/           # snapshots (generated + keyframes + version.json)
 ```
 
 Generated files are served via `/api/storage/...` for local preview.
@@ -143,16 +146,11 @@ Generated files are served via `/api/storage/...` for local preview.
 - Video size: `720x1280` (sora-2 default). `sora-2-pro` also supports `1024x1792` and `1792x1024`.
 - Duration: 4 seconds
 - Extract FPS: 6
-- Loop mode: ping-pong
+- Loop mode: loop (end frame = start frame)
 - Frame size derived from character reference (default 253×504)
 - Invalid sizes are automatically coerced to a supported size for the selected model
-- If `OPENAI_API_KEY` is missing, generation will fail (fallback still available via Replicate)
+- Provider selection is explicit; generation fails if the selected provider's API key is missing
 - Rebuild: you can re-pack spritesheets from `frames_raw` without re-running generation
-
-### Replicate fallback (legacy)
-- `retro-diffusion/rd-animation` generates a spritesheet directly
-- Uses the primary reference image
-- If `REPLICATE_API_TOKEN` is missing, a local fallback copies the primary reference image
 
 ### Keyframe Refinement
 
@@ -167,6 +165,9 @@ Supported advanced inputs (rd-fast/rd-plus):
 - `tile_x`, `tile_y`
 - `seed`
 - `bypass_prompt_expansion`
+
+Optional refinement model:
+- `google/nano-banana-pro` for general-purpose single-frame refinement
 
 ## Export Formats
 

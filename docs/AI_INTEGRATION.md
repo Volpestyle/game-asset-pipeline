@@ -22,9 +22,11 @@ further lock identity across frames.
 | Provider | Role | Use Case |
 |----------|------|----------|
 | OpenAI | Primary generation | Image → video → frames (Sora) |
-| Replicate | Secondary generation | Keyframe interpolation (rd-fast/rd-plus), legacy spritesheet fallback |
+| Replicate | Secondary generation | Video models (Ray2, PixVerse v5, ToonCrafter, Veo 3.1/fast) + keyframe refinement (rd-fast/rd-plus, nano-banana-pro) |
 | Fal.ai | Planned/optional | Fast inference experiments (not wired in) |
 | Gemini | Planned/optional | Image understanding, style detection (not wired in) |
+
+**Provider selection is explicit**: the UI requires choosing a provider and model, and generation fails if the provider’s API key is missing.
 
 ## OpenAI Video API (Primary)
 
@@ -96,23 +98,22 @@ export async function analyzeCharacterReference(imageUrl: string) {
 
 ## Replicate Models (Current Usage)
 
-### 1. rd-animation (Legacy fallback)
+### Video generation (image → video)
 
-**Model**: `retro-diffusion/rd-animation`
+- `luma/ray-flash-2-720p` (Ray2 Flash)
+- `pixverse/pixverse-v5` (PixVerse v5)
+- `fofr/tooncrafter` (ToonCrafter)
+- `google/veo-3.1-fast` (Veo 3.1 Fast)
+- `google/veo-3.1` (Veo 3.1)
 
-**Purpose**: Generate a spritesheet directly (used only if OpenAI is not selected or unavailable).
+These are used when the provider is set to **Replicate** and the selected model supports
+start/end frames or loop flags.
 
-### 2. rd-fast (Keyframe interpolation)
+### Keyframe refinement
 
-**Model**: `retro-diffusion/rd-fast`
-
-**Purpose**: Fast in-between frame refinement between user keyframes.
-
-### 3. rd-plus (Keyframe interpolation)
-
-**Model**: `retro-diffusion/rd-plus`
-
-**Purpose**: Higher fidelity in-between frame refinement.
+- `retro-diffusion/rd-fast` (fast refinements)
+- `retro-diffusion/rd-plus` (higher fidelity refinements)
+- `google/nano-banana-pro` (general-purpose single-frame refinement)
 
 ---
 
@@ -124,55 +125,17 @@ export async function analyzeCharacterReference(imageUrl: string) {
 
 ## Generation Strategies
 
-### Strategy 1: Frame-by-Frame with Keyframe Interpolation
+### Strategy 1: Keyframe interpolation (current)
 
 Best for: Precise control, technical animations (attack moves, specific poses)
 
-```
-Keyframe 0 ──────────────────────────────────── Keyframe 8
-     │                                               │
-     ▼                                               ▼
-  Frame 0 → Frame 1 → Frame 2 → ... → Frame 7 → Frame 8
-     │         │         │               │         │
-     └─────────┴─────────┴───────────────┴─────────┘
-                         │
-              rd-fast/rd-plus interpolation
-              + progressive prompt changes
-              + keyframe blending
-```
+The current app exposes:
+- `POST /api/animations/:id/keyframes` for single-frame upload/generation/refinement
+- `POST /api/animations/:id/interpolate` to generate in-betweens between keyframes
 
-**Algorithm**:
-```typescript
-async function generateFrameByFrame(
-  character: Character,
-  animation: Animation
-): Promise<GeneratedFrame[]> {
-  const frames: GeneratedFrame[] = [];
-
-  for (let i = 0; i < animation.frameCount; i++) {
-    // Find nearest keyframes
-    const prevKeyframe = findPreviousKeyframe(animation.keyframes, i);
-    const nextKeyframe = findNextKeyframe(animation.keyframes, i);
-
-    // Calculate interpolation factor
-    const t = calculateInterpolation(prevKeyframe, nextKeyframe, i);
-
-    // Build frame-specific prompt
-    const prompt = buildFramePrompt(animation.description, i, animation.frameCount, t);
-
-    // Generate in-between frame (rd-fast/rd-plus)
-    const frame = await generateWithReplicate({
-      baseImage: blendKeyframes(prevKeyframe?.image, nextKeyframe?.image, t),
-      prompt,
-      strength: 0.2 + (t * 0.2),
-    });
-
-    frames.push(frame);
-  }
-
-  return frames;
-}
-```
+Interpolation blends adjacent keyframes and runs rd-fast/rd-plus or nano-banana-pro
+to refine the intermediate frames. Full automated “frame-by-frame” generation for
+every frame is not wired in yet.
 
 ### Strategy 2: Video Generation + Frame Extraction (current default)
 

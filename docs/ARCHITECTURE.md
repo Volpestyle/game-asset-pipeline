@@ -59,12 +59,32 @@
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐        │
 │  │     OpenAI       │  │    Replicate     │  │  Optional/Planned│        │
 │  │                  │  │                  │  │                  │        │
-│  │ - Sora Video API │  │ - rd-fast/plus   │  │ - Fal.ai         │        │
-│  │ - image→video    │  │ - rd-animation   │  │ - Gemini         │        │
+│  │ - Sora Video API │  │ - video models   │  │ - Fal.ai         │        │
+│  │ - image→video    │  │ - rd-fast/plus   │  │ - Gemini         │        │
 │  └──────────────────┘  └──────────────────┘  └──────────────────┘        │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+> **Implementation note:** The current codebase uses Next.js route handlers under
+> `src/app/api/*` and shared utilities in `src/lib/*`. A separate services layer
+> (e.g., `CharacterService`, `AnimationService`) is not implemented yet.
+
+## API Routes (Current)
+
+- `/api/characters` (list + create)
+- `/api/characters/[id]` (read/update/delete)
+- `/api/animations` (list + create)
+- `/api/animations/[id]` (read/update/delete)
+- `/api/generate` (start generation)
+- `/api/export` (export spritesheet + metadata)
+- `/api/project` (project-wide canvas settings)
+- `/api/animations/[id]/keyframes` (upload/generate/refine keyframes)
+- `/api/animations/[id]/interpolate` (generate in-betweens)
+- `/api/animations/[id]/rebuild` (rebuild spritesheet from raw frames)
+- `/api/animations/[id]/import-video` (import MP4 and extract frames)
+- `/api/animations/[id]/generation-frames` (upload start/end frames)
+- `/api/animations/[id]/versions` + `/load` (versioning)
 
 ## Core Types
 
@@ -84,6 +104,8 @@ interface Character {
     roi: { x: number; y: number; w: number; h: number };
     bgKeyColor: string;
   };
+  anchor?: AnchorPoint;
+  scale?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -103,6 +125,13 @@ type ArtStyle =
   | "realistic"
   | "custom";
 
+type AnchorPoint =
+  | "bottom-center"
+  | "center"
+  | "bottom-left"
+  | "bottom-right"
+  | "top-center";
+
 interface Animation {
   id: string;
   characterId: string;
@@ -112,12 +141,19 @@ interface Animation {
   frameCount: number;
   fps: number;
   style: AnimationStyle;
+  spriteSize: number;
   frameWidth?: number;
   frameHeight?: number;
   generationProvider?: "openai" | "replicate";
   generationModel?: string;
+  promptProfile?: "concise" | "verbose";
+  promptConcise?: string;
+  promptVerbose?: string;
   generationSeconds?: number;
   generationSize?: string;
+  generationLoop?: boolean;
+  generationStartImageUrl?: string | null;
+  generationEndImageUrl?: string | null;
   extractFps?: number;
   loopMode?: "loop" | "pingpong";
   sheetColumns?: number;
@@ -130,7 +166,17 @@ interface Animation {
   status: "draft" | "generating" | "complete" | "failed";
   generatedSpritesheet?: string;
   spritesheetLayout?: SpritesheetLayout;
-  exports?: Record<string, string | undefined>;
+  exports?: {
+    spritesheetUrl?: string;
+    asepriteJsonHashUrl?: string;
+    asepriteJsonArrayUrl?: string;
+    pngSequenceUrl?: string;
+    pngSequenceIndexUrl?: string;
+    zipBundleUrl?: string;
+    normalized?: boolean;
+    backgroundRemoved?: boolean;
+    alphaThreshold?: number;
+  };
   actualFrameCount?: number;
   createdAt: string;
   updatedAt: string;
@@ -164,6 +210,7 @@ storage/
 │       └── reference_*.png
 └── animations/
     └── {animationId}/
+        ├── generation/
         ├── keyframes/
         │   └── frame_005.png
         ├── generated/
@@ -173,6 +220,11 @@ storage/
         └── exports/
             ├── spritesheet.png
             └── spritesheet.json
+        └── versions/
+            └── {versionId}/
+                ├── generated/
+                ├── keyframes/
+                └── version.json
 ```
 
 ### Future (Cloud Storage)
@@ -190,8 +242,8 @@ storage/
 
 ### Secondary: Replicate
 
-- rd-fast / rd-plus for keyframe interpolation
-- rd-animation as legacy fallback spritesheet generation
+- Video generation models (Ray2, PixVerse v5, ToonCrafter, Veo 3.1/fast)
+- rd-fast / rd-plus and nano-banana-pro for keyframe refinement
 
 ### Optional/Planned
 
