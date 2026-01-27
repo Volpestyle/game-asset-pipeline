@@ -1,6 +1,7 @@
 import path from "path";
 import { promises as fs } from "fs";
 import sharp from "sharp";
+import { DEFAULT_BG_KEY, parseHexColor } from "@/lib/color";
 
 export type WorkingSpec = {
   canvasW: number;
@@ -22,21 +23,6 @@ type BuildWorkingReferenceOptions = {
 
 export type NormalizeImageOptions = BuildWorkingReferenceOptions;
 
-function parseHexColor(color: string) {
-  const cleaned = color.replace("#", "").trim();
-  if (cleaned.length !== 6) {
-    return { r: 255, g: 0, b: 255 };
-  }
-  const r = Number.parseInt(cleaned.slice(0, 2), 16);
-  const g = Number.parseInt(cleaned.slice(2, 4), 16);
-  const b = Number.parseInt(cleaned.slice(4, 6), 16);
-  return {
-    r: Number.isFinite(r) ? r : 255,
-    g: Number.isFinite(g) ? g : 0,
-    b: Number.isFinite(b) ? b : 255,
-  };
-}
-
 export async function normalizeImageToCanvas(
   options: NormalizeImageOptions
 ): Promise<{
@@ -48,7 +34,7 @@ export async function normalizeImageToCanvas(
 }> {
   const canvasW = options.canvasW ?? 1024;
   const canvasH = options.canvasH ?? 1792;
-  const bgKeyColor = options.bgKeyColor ?? "#FF00FF";
+  const bgKeyColor = options.bgKeyColor ?? DEFAULT_BG_KEY;
   const metadata = await sharp(options.sourcePath).metadata();
   const baseWidth =
     options.baseWidth ?? metadata.width ?? 253;

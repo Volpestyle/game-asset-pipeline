@@ -49,6 +49,7 @@ export async function extractFrames(options: {
   frameSize?: number;
   frameWidth?: number;
   frameHeight?: number;
+  frameCount?: number;
 }) {
   const fallbackSize =
     options.frameSize ??
@@ -65,9 +66,15 @@ export async function extractFrames(options: {
   await fs.mkdir(options.outputDir, { recursive: true });
   const frames: { frameIndex: number; filename: string; path: string }[] = [];
 
+  const maxFrames =
+    typeof options.frameCount === "number" && options.frameCount > 0
+      ? options.frameCount
+      : layout.columns * layout.rows;
+
   let index = 0;
-  for (let row = 0; row < layout.rows; row += 1) {
+  outer: for (let row = 0; row < layout.rows; row += 1) {
     for (let col = 0; col < layout.columns; col += 1) {
+      if (index >= maxFrames) break outer;
       const left = col * (layout.frameWidth ?? 0);
       const top = row * (layout.frameHeight ?? 0);
       const filename = `frame_${String(index).padStart(3, "0")}.png`;

@@ -117,7 +117,37 @@ function buildSnapshot(animation: Animation): AnimationSnapshot {
 }
 
 function mapUrl(
+  url: string,
+  animationId: string,
+  versionId: string,
+  direction: "toVersion" | "toWorking"
+): string;
+function mapUrl(
+  url: undefined,
+  animationId: string,
+  versionId: string,
+  direction: "toVersion" | "toWorking"
+): undefined;
+function mapUrl(
+  url: null,
+  animationId: string,
+  versionId: string,
+  direction: "toVersion" | "toWorking"
+): null;
+function mapUrl(
   url: string | undefined,
+  animationId: string,
+  versionId: string,
+  direction: "toVersion" | "toWorking"
+): string | undefined;
+function mapUrl(
+  url: string | null | undefined,
+  animationId: string,
+  versionId: string,
+  direction: "toVersion" | "toWorking"
+): string | null | undefined;
+function mapUrl(
+  url: string | null | undefined,
   animationId: string,
   versionId: string,
   direction: "toVersion" | "toWorking"
@@ -155,6 +185,26 @@ function mapKeyframe(
       direction
     );
   }
+  if (Array.isArray(mapped.generations)) {
+    mapped.generations = mapped.generations.map((generation) => {
+      const mappedGeneration = { ...generation };
+      mappedGeneration.image = mapUrl(
+        mappedGeneration.image,
+        animationId,
+        versionId,
+        direction
+      );
+      if (typeof mappedGeneration.inputPalette === "string") {
+        mappedGeneration.inputPalette = mapUrl(
+          mappedGeneration.inputPalette,
+          animationId,
+          versionId,
+          direction
+        );
+      }
+      return mappedGeneration;
+    });
+  }
   return mapped;
 }
 
@@ -165,7 +215,7 @@ function mapGeneratedFrame(
   direction: "toVersion" | "toWorking"
 ) {
   const mapped: GeneratedFrame = { ...frame };
-  if (mapped.url) {
+  if (typeof mapped.url === "string") {
     mapped.url = mapUrl(mapped.url, animationId, versionId, direction);
   }
   return mapped;

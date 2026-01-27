@@ -1,7 +1,5 @@
 import type { PromptProfile } from "@/types";
 
-const DEFAULT_BG_KEY = "#FF00FF";
-
 const ANIMATION_STYLE_HINTS_VERBOSE: Record<string, string> = {
   idle: "subtle breathing, gentle sway, standing in relaxed pose",
 };
@@ -67,7 +65,6 @@ export function buildVideoPrompt(options: {
   bgKeyColor?: string;
   promptProfile?: PromptProfile;
 }) {
-  const bg = options.bgKeyColor ?? DEFAULT_BG_KEY;
   const styleKey = options.style ?? "";
   const promptProfile = options.promptProfile ?? "verbose";
   const styleHintSource =
@@ -103,7 +100,6 @@ export function buildVideoPrompt(options: {
     "character stays centered, no camera movement",
     "keep proportions and identity identical to reference",
     "seamless looping animation, first and last pose match",
-    `pure solid magenta background (${bg}), perfectly uniform, no gradients or shadows`,
   ]
     .filter(Boolean)
     .join(", ");
