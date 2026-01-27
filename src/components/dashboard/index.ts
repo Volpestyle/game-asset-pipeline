@@ -6,3 +6,4 @@ export * from "./RecentActivity";
 export * from "./PipelineTools";
 export * from "./OutputConfig";
 export * from "./ExportTargets";
+export * from "./ModelStudio";
