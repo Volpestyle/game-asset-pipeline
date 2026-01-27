@@ -41,6 +41,7 @@ export async function POST(
   delete updated.exports;
   delete updated.generationNote;
   delete updated.generationJob;
+  delete updated.generationQueue;
   delete updated.sourceVideoUrl;
   delete updated.sourceProviderSpritesheetUrl;
   delete updated.sourceThumbnailUrl;

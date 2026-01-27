@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import sharp from "sharp";
 import { runReplicateModel } from "@/lib/ai/replicate";
+import { bufferToDataUrl } from "@/lib/dataUrl";
 import { getShutdownSignal } from "@/lib/shutdown";
 import { composeSpritesheet, writeFrameImage } from "@/lib/spritesheet";
 import {
@@ -10,6 +11,7 @@ import {
   storagePathFromUrl,
   writeJson,
 } from "@/lib/storage";
+import { inferAspectRatio, inferResolution } from "@/lib/videoMetrics";
 import type { Animation as AnimationModel, GeneratedFrame, Keyframe } from "@/types";
 
 export const runtime = "nodejs";
@@ -34,39 +36,6 @@ function computeStrength(t: number) {
   return MIN_STRENGTH + (MAX_STRENGTH - MIN_STRENGTH) * peak;
 }
 
-function toDataUrl(buffer: Buffer, mime = "image/png") {
-  return `data:${mime};base64,${buffer.toString("base64")}`;
-}
-
-function inferAspectRatio(width: number, height: number) {
-  if (!width || !height) return undefined;
-  const ratio = width / height;
-  const presets = [
-    { value: "1:1", ratio: 1 },
-    { value: "4:3", ratio: 4 / 3 },
-    { value: "3:4", ratio: 3 / 4 },
-    { value: "16:9", ratio: 16 / 9 },
-    { value: "9:16", ratio: 9 / 16 },
-  ];
-  let best = presets[0];
-  let bestDelta = Math.abs(ratio - best.ratio);
-  for (const preset of presets.slice(1)) {
-    const delta = Math.abs(ratio - preset.ratio);
-    if (delta < bestDelta) {
-      best = preset;
-      bestDelta = delta;
-    }
-  }
-  return best.value;
-}
-
-function inferResolution(width: number, height: number) {
-  const maxDim = Math.max(width, height);
-  if (!Number.isFinite(maxDim) || maxDim <= 0) return undefined;
-  if (maxDim >= 3500) return "4K";
-  if (maxDim >= 1800) return "2K";
-  return "1K";
-}
 
 async function loadImageBuffer(imageUrl: string) {
   const localPath = storagePathFromUrl(imageUrl);
@@ -266,7 +235,7 @@ export async function POST(
           frameWidth,
           frameHeight
         );
-        const inputImage = toDataUrl(blended, "image/png");
+        const inputImage = bufferToDataUrl(blended, "image/png");
         const strength = clampStrength(computeStrength(t));
         const promptBase = String(animation.description ?? "").trim();
         const prompt = promptBase

@@ -1,9 +1,12 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { spawn } from "child_process";
-import sharp from "sharp";
-import { composeSpritesheet } from "@/lib/spritesheet";
+import { coerceVideoSizeForModel, getDefaultVideoSize } from "@/lib/ai/soraConstraints";
 import { createAnimationVersion } from "@/lib/animationVersions";
+import { DEFAULT_BG_KEY } from "@/lib/color";
+import { runFfmpeg } from "@/lib/ffmpeg";
+import { buildSpritesheetLayout, sortFrameFiles } from "@/lib/frameUtils";
+import { composeSpritesheet } from "@/lib/spritesheet";
+import { parseSize } from "@/lib/size";
 import {
   ensureDir,
   fileExists,
@@ -11,47 +14,10 @@ import {
   storagePath,
   writeJson,
 } from "@/lib/storage";
-import {
-  coerceVideoSizeForModel,
-  getDefaultVideoSize,
-} from "@/lib/ai/soraConstraints";
 
 export const runtime = "nodejs";
 
-const DEFAULT_BG_KEY = "#FF00FF";
-const ALLOWED_FPS = [6, 8, 12];
-
-function parseSize(size: string) {
-  const [w, h] = size.split("x").map((value) => Number(value));
-  const width = Number.isFinite(w) ? w : 0;
-  const height = Number.isFinite(h) ? h : 0;
-  return { width, height };
-}
-
-async function runFfmpeg(args: string[]) {
-  return new Promise<void>((resolve, reject) => {
-    const process = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
-    process.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-    process.on("error", (err) => {
-      const error = err as NodeJS.ErrnoException;
-      if (error.code === "ENOENT") {
-        reject(new Error("ffmpeg not found. Install ffmpeg to extract frames."));
-      } else {
-        reject(err);
-      }
-    });
-    process.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(stderr || `ffmpeg failed with exit code ${code}`));
-      }
-    });
-  });
-}
+const ALLOWED_FPS = [6, 8, 12, 24];
 
 async function extractVideoFrames(options: {
   videoPath: string;
@@ -94,70 +60,6 @@ async function extractVideoFrames(options: {
   await runFfmpeg(args);
 }
 
-async function keyOutMagenta(filePath: string, color = DEFAULT_BG_KEY) {
-  const cleaned = color.replace("#", "").trim();
-  const target = cleaned.length === 6 ? cleaned : "FF00FF";
-  const rTarget = Number.parseInt(target.slice(0, 2), 16);
-  const gTarget = Number.parseInt(target.slice(2, 4), 16);
-  const bTarget = Number.parseInt(target.slice(4, 6), 16);
-  const tolerance = 12;
-
-  const { data, info } = await sharp(filePath)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    const within =
-      Math.abs(r - rTarget) <= tolerance &&
-      Math.abs(g - gTarget) <= tolerance &&
-      Math.abs(b - bTarget) <= tolerance;
-    if (within) {
-      data[i + 3] = 0;
-    }
-  }
-
-  await sharp(data, {
-    raw: { width: info.width, height: info.height, channels: 4 },
-  })
-    .png()
-    .toFile(filePath);
-}
-
-function sortFrameFiles(files: string[]) {
-  return files
-    .filter((file) => file.endsWith(".png"))
-    .sort((a, b) => {
-      const matchA = a.match(/frame_(\d+)/);
-      const matchB = b.match(/frame_(\d+)/);
-      const indexA = matchA ? Number(matchA[1]) : 0;
-      const indexB = matchB ? Number(matchB[1]) : 0;
-      return indexA - indexB;
-    });
-}
-
-function buildLayout(options: {
-  frameWidth: number;
-  frameHeight: number;
-  columns: number;
-  frameCount: number;
-}) {
-  const columns = Math.max(1, options.columns);
-  const rows = Math.max(1, Math.ceil(options.frameCount / columns));
-  return {
-    frameSize:
-      options.frameWidth === options.frameHeight ? options.frameWidth : undefined,
-    frameWidth: options.frameWidth,
-    frameHeight: options.frameHeight,
-    columns,
-    rows,
-    width: columns * options.frameWidth,
-    height: rows * options.frameHeight,
-  };
-}
 
 export async function POST(
   request: Request,
@@ -228,8 +130,8 @@ export async function POST(
     frameHeight = 504;
   }
 
-  const requestedFps = Number(animation.extractFps ?? animation.fps ?? 6);
-  const extractFps = ALLOWED_FPS.includes(requestedFps) ? requestedFps : 6;
+  const requestedFps = Number(animation.extractFps ?? animation.fps ?? 12);
+  const extractFps = ALLOWED_FPS.includes(requestedFps) ? requestedFps : 12;
   const loopModeInput = String(animation.loopMode ?? "loop");
   const loopMode = loopModeInput === "pingpong" ? "pingpong" : "loop";
   const sheetColumns = Math.max(1, Number(animation.sheetColumns ?? 6));
@@ -326,7 +228,6 @@ export async function POST(
     const outputName = `frame_${String(index).padStart(3, "0")}.png`;
     const outputPath = path.join(framesDir, outputName);
     await fs.copyFile(inputPath, outputPath);
-    await keyOutMagenta(outputPath, bgKeyColor);
     generatedFrames.push({
       frameIndex: index,
       url: `/api/storage/animations/${id}/generated/frames/${outputName}`,
@@ -336,7 +237,7 @@ export async function POST(
     });
   }
 
-  const layout = buildLayout({
+  const layout = buildSpritesheetLayout({
     frameWidth,
     frameHeight,
     columns: sheetColumns,
@@ -365,6 +266,7 @@ export async function POST(
     sourceVideoUrl: `/api/storage/animations/${id}/generated/${videoFilename}`,
     sourceProviderSpritesheetUrl: undefined,
     sourceThumbnailUrl: undefined,
+    generationQueue: undefined,
     generationJob: {
       provider: "upload",
       providerJobId: `upload_${Date.now()}`,

@@ -12,8 +12,8 @@ import {
   coerceVideoSizeForModel,
   getDefaultVideoSeconds,
   coerceVideoSecondsForModel,
-  getVideoProviderForModel,
   getVideoModelPromptProfile,
+  getVideoModelConfig,
 } from "@/lib/ai/soraConstraints";
 import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
 
@@ -57,6 +57,7 @@ export async function POST(request: Request) {
     promptProfile,
     promptConcise,
     promptVerbose,
+    generationNegativePrompt,
     extractFps,
     loopMode,
     sheetColumns,
@@ -67,6 +68,8 @@ export async function POST(request: Request) {
     tooncrafterInterpolate,
     tooncrafterColorCorrection,
     tooncrafterSeed,
+    tooncrafterNegativePrompt,
+    tooncrafterEmptyPrompt,
   } = payload ?? {};
 
   const resolvedStyle = String(style ?? "idle");
@@ -114,24 +117,47 @@ export async function POST(request: Request) {
     resolvedFrameHeight = 504;
   }
 
-  const requestedExtractFps = Number(extractFps ?? fps ?? 6);
-  const resolvedExtractFps = [6, 8, 12].includes(requestedExtractFps)
+  const requestedExtractFps = Number(extractFps ?? fps ?? 12);
+  const resolvedExtractFps = [6, 8, 12, 24].includes(requestedExtractFps)
     ? requestedExtractFps
-    : 6;
+    : 12;
   const resolvedModel = String(generationModel ?? "sora-2");
+  const requestedProvider = String(generationProvider ?? "").trim();
+  if (requestedProvider !== "openai" && requestedProvider !== "replicate") {
+    return Response.json(
+      { error: "Generation provider is required. Select OpenAI or Replicate." },
+      { status: 400 }
+    );
+  }
+  const modelProvider = getVideoModelConfig(resolvedModel).provider;
+  if (requestedProvider !== modelProvider) {
+    return Response.json(
+      {
+        error: `Generation provider (${requestedProvider}) does not match model provider (${modelProvider}).`,
+      },
+      { status: 400 }
+    );
+  }
   const requestedSeconds = Number(generationSeconds ?? getDefaultVideoSeconds(resolvedModel));
   const resolvedSeconds = coerceVideoSecondsForModel(requestedSeconds, resolvedModel);
   const expectedFrameCount = resolvedSeconds * resolvedExtractFps;
 
   const requestedSize = String(generationSize ?? getDefaultVideoSize(resolvedModel));
   const resolvedSize = coerceVideoSizeForModel(requestedSize, resolvedModel);
-
   const resolvedColumns = Math.max(1, Number(sheetColumns ?? 6));
   const requestedPromptProfile = String(promptProfile ?? "").trim();
   const resolvedPromptProfile =
     requestedPromptProfile === "concise" || requestedPromptProfile === "verbose"
       ? requestedPromptProfile
       : getVideoModelPromptProfile(resolvedModel);
+  const resolvedNegativePrompt =
+    typeof tooncrafterNegativePrompt === "string"
+      ? tooncrafterNegativePrompt.trim()
+      : "";
+  const resolvedGenerationNegativePrompt =
+    typeof generationNegativePrompt === "string"
+      ? generationNegativePrompt.trim()
+      : "";
   const artStyle = characterStyle || "pixel-art";
   const autoPromptConcise = buildVideoPrompt({
     description: String(description ?? ""),
@@ -164,7 +190,7 @@ export async function POST(request: Request) {
     spriteSize: Number(spriteSize ?? resolvedFrameWidth),
     frameWidth: resolvedFrameWidth,
     frameHeight: resolvedFrameHeight,
-    generationProvider: String(generationProvider ?? getVideoProviderForModel(resolvedModel)),
+    generationProvider: requestedProvider,
     generationModel: resolvedModel,
     promptProfile: resolvedPromptProfile,
     promptConcise: resolvedPromptConcise,
@@ -174,6 +200,9 @@ export async function POST(request: Request) {
     generationLoop: generationLoop === true,
     generationStartImageUrl: null,
     generationEndImageUrl: null,
+    generationNegativePrompt: resolvedGenerationNegativePrompt
+      ? resolvedGenerationNegativePrompt
+      : null,
     tooncrafterInterpolate: tooncrafterInterpolate === true,
     tooncrafterColorCorrection:
       typeof tooncrafterColorCorrection === "boolean"
@@ -183,6 +212,8 @@ export async function POST(request: Request) {
       typeof tooncrafterSeed === "number" && Number.isFinite(tooncrafterSeed)
         ? tooncrafterSeed
         : null,
+    tooncrafterNegativePrompt: resolvedNegativePrompt ? resolvedNegativePrompt : null,
+    tooncrafterEmptyPrompt: tooncrafterEmptyPrompt === true,
     extractFps: resolvedExtractFps,
     loopMode: (loopMode ?? "loop") === "pingpong" ? "pingpong" : "loop",
     sheetColumns: resolvedColumns,

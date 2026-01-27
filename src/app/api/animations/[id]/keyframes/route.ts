@@ -3,8 +3,10 @@ import path from "path";
 import crypto from "crypto";
 import sharp from "sharp";
 import { runReplicateModel } from "@/lib/ai/replicate";
+import { fileToDataUrl, getExtensionForMime, parseDataUrl } from "@/lib/dataUrl";
 import { getShutdownSignal } from "@/lib/shutdown";
 import { composeSpritesheet, writeFrameImage } from "@/lib/spritesheet";
+import { parseBoolean } from "@/lib/parsing";
 import {
   fileExists,
   readJson,
@@ -12,7 +14,8 @@ import {
   storagePathFromUrl,
   writeJson,
 } from "@/lib/storage";
-import type { Animation as AnimationModel, Keyframe } from "@/types";
+import { inferAspectRatio, inferResolution } from "@/lib/videoMetrics";
+import type { Animation as AnimationModel, Keyframe, KeyframeGeneration } from "@/types";
 
 export const runtime = "nodejs";
 
@@ -24,75 +27,11 @@ const NANO_BANANA_MODEL =
   process.env.NANO_BANANA_MODEL?.trim() || "google/nano-banana-pro";
 const NANO_BANANA_VERSION = process.env.NANO_BANANA_VERSION?.trim() || undefined;
 
-const MIME_TYPES: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-};
-
-const MIME_EXT: Record<string, string> = {
-  "image/png": ".png",
-  "image/jpeg": ".jpg",
-  "image/jpg": ".jpg",
-  "image/webp": ".webp",
-};
-
-function parseDataUrl(dataUrl: string) {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-  if (!match) return null;
-  return { mime: match[1], data: match[2] };
-}
-
-async function fileToDataUrl(filePath: string) {
-  const buffer = await fs.readFile(filePath);
-  const ext = path.extname(filePath).toLowerCase();
-  const mime = MIME_TYPES[ext] ?? "application/octet-stream";
-  return `data:${mime};base64,${buffer.toString("base64")}`;
-}
 
 function parseNumber(value: FormDataEntryValue | null, fallback: number) {
   if (value == null) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function parseBoolean(value: FormDataEntryValue | null) {
-  if (value == null) return false;
-  if (typeof value === "string") {
-    return value === "true" || value === "1" || value === "yes";
-  }
-  return false;
-}
-
-function inferAspectRatio(width: number, height: number) {
-  if (!width || !height) return undefined;
-  const ratio = width / height;
-  const presets = [
-    { value: "1:1", ratio: 1 },
-    { value: "4:3", ratio: 4 / 3 },
-    { value: "3:4", ratio: 3 / 4 },
-    { value: "16:9", ratio: 16 / 9 },
-    { value: "9:16", ratio: 9 / 16 },
-  ];
-  let best = presets[0];
-  let bestDelta = Math.abs(ratio - best.ratio);
-  for (const preset of presets.slice(1)) {
-    const delta = Math.abs(ratio - preset.ratio);
-    if (delta < bestDelta) {
-      best = preset;
-      bestDelta = delta;
-    }
-  }
-  return best.value;
-}
-
-function inferResolution(width: number, height: number) {
-  const maxDim = Math.max(width, height);
-  if (!Number.isFinite(maxDim) || maxDim <= 0) return undefined;
-  if (maxDim >= 3500) return "4K";
-  if (maxDim >= 1800) return "2K";
-  return "1K";
 }
 
 function updateKeyframes(list: Keyframe[], entry: Keyframe) {
@@ -146,7 +85,11 @@ export async function POST(
   }
 
   const formData = await request.formData();
-  const mode = String(formData.get("mode") ?? "upload");
+  const modeInput = String(formData.get("mode") ?? "upload");
+  const mode =
+    modeInput === "generate" || modeInput === "refine" || modeInput === "select"
+      ? modeInput
+      : "upload";
   const frameIndex = parseNumber(formData.get("frameIndex"), -1);
   const promptInput = String(formData.get("prompt") ?? "").trim();
   const modelInput = String(formData.get("model") ?? "rd-fast");
@@ -157,6 +100,7 @@ export async function POST(
         ? "rd-plus"
         : "rd-fast";
   const styleInput = String(formData.get("style") ?? "").trim();
+  const selectedImageUrl = String(formData.get("imageUrl") ?? "").trim();
   const strength = parseNumber(formData.get("strength"), 0.4);
   const removeBg = parseBoolean(formData.get("removeBg"));
   const bypassPromptExpansion = parseBoolean(formData.get("bypassPromptExpansion"));
@@ -164,6 +108,20 @@ export async function POST(
   const tileY = parseBoolean(formData.get("tileY"));
   const seedRaw = formData.get("seed");
   const seed = seedRaw == null || seedRaw === "" ? null : Number(seedRaw);
+
+  // Parse reference images array (for multi-image models like nano-banana-pro)
+  const referenceImagesRaw = formData.get("referenceImages");
+  let referenceImageUrls: string[] = [];
+  if (referenceImagesRaw && typeof referenceImagesRaw === "string") {
+    try {
+      const parsed = JSON.parse(referenceImagesRaw);
+      if (Array.isArray(parsed)) {
+        referenceImageUrls = parsed.filter((url): url is string => typeof url === "string");
+      }
+    } catch {
+      // Invalid JSON, ignore
+    }
+  }
 
   const animation = await readJson<AnimationModel>(animationPath);
   const totalFrames = Number(animation.actualFrameCount ?? animation.frameCount ?? 0);
@@ -175,11 +133,14 @@ export async function POST(
   const existingKeyframe = keyframes.find((item) => item.frameIndex === frameIndex);
 
   const file = formData.get("image");
+  const paletteInput = formData.get("inputPalette");
   const shouldGenerate = mode === "generate" || mode === "refine";
 
   let outputBuffer: Buffer | null = null;
   let outputExt = ".png";
   let paletteUrl: string | undefined;
+  let resolvedStyle: string | undefined = styleInput || undefined;
+  let selectedImageFilename: string | null = null;
 
   if (shouldGenerate) {
     if (!process.env.REPLICATE_API_TOKEN) {
@@ -265,7 +226,21 @@ export async function POST(
       if (resolution) {
         input.resolution = resolution;
       }
-      if (inputImagePath) {
+
+      // Handle multiple reference images
+      if (referenceImageUrls.length > 0) {
+        const imageInputs: string[] = [];
+        for (const url of referenceImageUrls) {
+          const refPath = storagePathFromUrl(url);
+          if (refPath && (await fileExists(refPath))) {
+            imageInputs.push(await fileToDataUrl(refPath));
+          }
+        }
+        if (imageInputs.length > 0) {
+          input.image_input = imageInputs;
+        }
+      } else if (inputImagePath) {
+        // Fallback to single uploaded image
         input.image_input = [await fileToDataUrl(inputImagePath)];
       }
 
@@ -337,6 +312,7 @@ export async function POST(
         : usePlus
           ? "default"
           : "game_asset";
+      resolvedStyle = style;
 
       const input: Record<string, unknown> = {
         prompt,
@@ -364,11 +340,10 @@ export async function POST(
         input.seed = seed;
       }
 
-      const paletteInput = formData.get("inputPalette");
       if (paletteInput && typeof paletteInput === "string") {
         const parsed = parseDataUrl(paletteInput);
         if (parsed) {
-          const ext = MIME_EXT[parsed.mime] ?? ".png";
+          const ext = getExtensionForMime(parsed.mime) ?? ".png";
           const paletteFilename = `palette_${crypto.randomUUID()}${ext}`;
           const palettePath = storagePath("animations", id, "keyframes", paletteFilename);
           await fs.mkdir(path.dirname(palettePath), { recursive: true });
@@ -409,6 +384,28 @@ export async function POST(
       }
       outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
     }
+  } else if (mode === "select") {
+    if (paletteInput && typeof paletteInput === "string") {
+      paletteUrl = paletteInput.trim() || undefined;
+    }
+    if (!selectedImageUrl) {
+      return Response.json({ error: "Missing image URL for selection." }, { status: 400 });
+    }
+    const selectedPath = storagePathFromUrl(selectedImageUrl);
+    if (!selectedPath) {
+      return Response.json({ error: "Invalid image URL for selection." }, { status: 400 });
+    }
+    const keyframesDir = storagePath("animations", id, "keyframes");
+    const normalized = path.normalize(selectedPath);
+    if (!normalized.startsWith(`${keyframesDir}${path.sep}`)) {
+      return Response.json({ error: "Image URL is not a keyframe asset." }, { status: 400 });
+    }
+    if (!(await fileExists(selectedPath))) {
+      return Response.json({ error: "Selected image not found." }, { status: 404 });
+    }
+    outputBuffer = await fs.readFile(selectedPath);
+    outputExt = path.extname(selectedPath) || ".png";
+    selectedImageFilename = path.basename(selectedPath);
   } else if (file && typeof (file as File).arrayBuffer === "function") {
     const inputFile = file as File;
     outputBuffer = Buffer.from(await inputFile.arrayBuffer());
@@ -419,10 +416,14 @@ export async function POST(
     return Response.json({ error: "No image provided." }, { status: 400 });
   }
 
-  const filename = `frame_${String(frameIndex).padStart(3, "0")}_${Date.now()}${outputExt}`;
+  const filename =
+    selectedImageFilename ??
+    `frame_${String(frameIndex).padStart(3, "0")}_${Date.now()}${outputExt}`;
   const keyframePath = storagePath("animations", id, "keyframes", filename);
-  await fs.mkdir(path.dirname(keyframePath), { recursive: true });
-  await fs.writeFile(keyframePath, outputBuffer);
+  if (!selectedImageFilename) {
+    await fs.mkdir(path.dirname(keyframePath), { recursive: true });
+    await fs.writeFile(keyframePath, outputBuffer);
+  }
 
   const framesDir = storagePath("animations", id, "generated", "frames");
   const frameFile = storagePath(
@@ -459,20 +460,44 @@ export async function POST(
     // Frame write is best-effort; continue.
   }
 
+  const normalizedStrength = Math.min(1, Math.max(0, strength));
+  const normalizedSeed =
+    typeof seed === "number" && Number.isFinite(seed) ? seed : undefined;
   const updatedKeyframe: Keyframe = {
     frameIndex,
     image: `/api/storage/animations/${id}/keyframes/${filename}`,
     prompt: promptInput || existingKeyframe?.prompt,
     model,
-    strength: Math.min(1, Math.max(0, strength)),
+    strength: normalizedStrength,
+    generations: existingKeyframe?.generations,
     inputPalette: paletteUrl ?? existingKeyframe?.inputPalette,
     tileX,
     tileY,
     removeBg,
-    seed: typeof seed === "number" && Number.isFinite(seed) ? seed : undefined,
+    seed: normalizedSeed,
     bypassPromptExpansion,
     updatedAt: new Date().toISOString(),
   };
+  const generationEntry: KeyframeGeneration | null =
+    shouldGenerate
+      ? {
+        id: crypto.randomUUID(),
+        image: `/api/storage/animations/${id}/keyframes/${filename}`,
+        createdAt: new Date().toISOString(),
+        source: mode,
+        prompt: promptInput || existingKeyframe?.prompt,
+        model,
+        style: resolvedStyle,
+        strength: normalizedStrength,
+        inputPalette: paletteUrl ?? existingKeyframe?.inputPalette,
+        tileX,
+        tileY,
+        removeBg,
+        seed: normalizedSeed,
+        bypassPromptExpansion,
+        saved: false,
+      }
+      : null;
 
   const updatedKeyframes = updateKeyframes(keyframes, updatedKeyframe);
   const updatedAnimation: Record<string, unknown> = {
@@ -515,5 +540,9 @@ export async function POST(
 
   await writeJson(animationPath, updatedAnimation);
 
-  return Response.json({ animation: updatedAnimation, keyframe: updatedKeyframe });
+  return Response.json({
+    animation: updatedAnimation,
+    keyframe: updatedKeyframe,
+    generation: generationEntry,
+  });
 }

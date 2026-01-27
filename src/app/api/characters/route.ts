@@ -1,10 +1,14 @@
 import { promises as fs } from "fs";
 import path from "path";
 import crypto from "crypto";
+import sharp from "sharp";
+import { removeBackgroundWithPython } from "@/lib/backgroundRemoval";
+import { logger } from "@/lib/logger";
+import { parseBoolean } from "@/lib/parsing";
 import { ensureDir, storagePath, writeJson } from "@/lib/storage";
 import { getCharacters } from "@/lib/characters";
 import { buildWorkingReference } from "@/lib/character/workingReference";
-import type { ReferenceImageType } from "@/types";
+import type { ReferenceImage, ReferenceImageType } from "@/types";
 
 export const runtime = "nodejs";
 
@@ -25,6 +29,7 @@ export async function POST(request: Request) {
     const style = String(formData.get("style") ?? "").trim();
     const primaryIndexRaw = formData.get("primaryIndex");
     const primaryIndex = primaryIndexRaw ? Number(primaryIndexRaw) : 0;
+    const removeBackground = parseBoolean(formData.get("removeBackground") ?? "true");
 
     const files = formData.getAll("images").filter((item): item is File => {
       return typeof (item as File).arrayBuffer === "function";
@@ -45,31 +50,69 @@ export async function POST(request: Request) {
     try {
       await ensureDir(refsDir);
     } catch (error) {
-      console.error("Failed to create directory:", error);
+      logger.error("Failed to create character directory", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return Response.json(
         { error: "Failed to initialize character storage." },
         { status: 500 }
       );
     }
 
-    const referenceImages = [];
+    const referenceImages: ReferenceImage[] = [];
 
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index];
-      const ext = path.extname(file.name) || ".png";
+      const originalExt = path.extname(file.name).toLowerCase();
+      const ext = removeBackground ? ".png" : originalExt || ".png";
       const imageId = crypto.randomUUID();
       const filename = `${imageId}${ext}`;
       const filePath = path.join(refsDir, filename);
       const buffer = Buffer.from(await file.arrayBuffer());
 
-      try {
-        await fs.writeFile(filePath, buffer);
-      } catch (error) {
-        console.error(`Failed to write file ${filename}:`, error);
-        return Response.json(
-          { error: "Failed to save reference image." },
-          { status: 500 }
-        );
+      if (removeBackground) {
+        const tempInput = path.join(refsDir, `${imageId}_input.png`);
+        try {
+          await sharp(buffer).png().toFile(tempInput);
+          await removeBackgroundWithPython({
+            inputPath: tempInput,
+            outputPath: filePath,
+          });
+          logger.info("AI background removal applied to reference image", {
+            characterId: id,
+            filename,
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Background removal failed.";
+          logger.error("AI background removal failed for reference image", {
+            characterId: id,
+            filename,
+            error: message,
+          });
+          await fs.rm(tempInput, { force: true });
+          return Response.json(
+            {
+              error:
+                "Background removal failed for a reference image. Check logs or disable removal.",
+            },
+            { status: 500 }
+          );
+        }
+        await fs.rm(tempInput, { force: true });
+      } else {
+        try {
+          await fs.writeFile(filePath, buffer);
+        } catch (error) {
+          logger.error("Failed to write reference image", {
+            filename,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return Response.json(
+            { error: "Failed to save reference image." },
+            { status: 500 }
+          );
+        }
       }
 
       referenceImages.push({
@@ -78,6 +121,7 @@ export async function POST(request: Request) {
         filename,
         type: getTypeAtIndex(typeValues, index),
         isPrimary: index === primaryIndex,
+        backgroundRemoved: removeBackground || undefined,
       });
     }
 
@@ -112,7 +156,10 @@ export async function POST(request: Request) {
         };
         workingSpec = result.workingSpec;
       } catch (error) {
-        console.error("Failed to create working reference:", error);
+        logger.warn("Failed to create working reference", {
+          characterId: id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
@@ -132,7 +179,10 @@ export async function POST(request: Request) {
     try {
       await writeJson(storagePath("characters", id, "character.json"), character);
     } catch (error) {
-      console.error("Failed to save character metadata:", error);
+      logger.error("Failed to save character metadata", {
+        characterId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return Response.json(
         { error: "Failed to save character data." },
         { status: 500 }
@@ -141,7 +191,9 @@ export async function POST(request: Request) {
 
     return Response.json({ character });
   } catch (error) {
-    console.error("Unexpected error in character creation:", error);
+    logger.error("Unexpected error in character creation", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return Response.json(
       { error: "Internal server error." },
       { status: 500 }
