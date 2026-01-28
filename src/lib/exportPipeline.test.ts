@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { buildAsepriteJson } from "@/lib/aseprite";
+import { frameIndexFromName } from "@/lib/frameUtils";
 import {
   buildIndexJson,
   buildZipAsepriteJson,
   clampAlphaThreshold,
-  frameIndexFromName,
   parseBackgroundRemovalMode,
 } from "@/lib/exportPipeline";
 

@@ -1,14 +1,28 @@
 import type { SpritesheetLayout } from "@/lib/spritesheet";
 
+export type LoopMode = "loop" | "pingpong";
+
+export function frameIndexFromName(filename: string): number {
+  const match = filename.match(/frame_(\d+)/);
+  return match ? Number(match[1]) : 0;
+}
+
+export function formatFrameFilename(index: number, extension = ".png"): string {
+  const suffix = extension.startsWith(".") ? extension : `.${extension}`;
+  return `frame_${String(index).padStart(3, "0")}${suffix}`;
+}
+
+export function buildFrameSequence<T>(frames: T[], loopMode: LoopMode): T[] {
+  if (loopMode !== "pingpong") return frames;
+  if (frames.length <= 1) return frames;
+  return frames.concat(frames.slice(1, -1).reverse());
+}
+
 export function sortFrameFiles(files: string[]): string[] {
   return files
     .filter((file) => file.endsWith(".png"))
     .sort((a, b) => {
-      const matchA = a.match(/frame_(\d+)/);
-      const matchB = b.match(/frame_(\d+)/);
-      const indexA = matchA ? Number(matchA[1]) : 0;
-      const indexB = matchB ? Number(matchB[1]) : 0;
-      return indexA - indexB;
+      return frameIndexFromName(a) - frameIndexFromName(b);
     });
 }
 

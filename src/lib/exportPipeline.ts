@@ -7,7 +7,7 @@ import {
   type AsepriteFrame,
 } from "@/lib/aseprite";
 import { removeBackgroundWithPython } from "@/lib/backgroundRemoval";
-import { sortFrameFiles } from "@/lib/frameUtils";
+import { frameIndexFromName, sortFrameFiles } from "@/lib/frameUtils";
 import { processImageFile } from "@/lib/imageProcessing";
 import { logger } from "@/lib/logger";
 import { fileExists, readJson, storagePath, writeJson } from "@/lib/storage";
@@ -107,11 +107,6 @@ export async function loadFrameFiles(framesDir: string): Promise<string[]> {
   } catch {
     return [];
   }
-}
-
-export function frameIndexFromName(filename: string): number {
-  const match = filename.match(/frame_(\d+)/);
-  return match ? Number(match[1]) : 0;
 }
 
 export function buildIndexJson(
@@ -225,13 +220,7 @@ export async function runExportPipeline(
 
     try {
       const frameFiles = await fs.readdir(framesDir);
-      const orderedFrames = frameFiles
-        .filter((f) => f.endsWith(".png"))
-        .sort((a, b) => {
-          const matchA = a.match(/frame_(\d+)\.png/);
-          const matchB = b.match(/frame_(\d+)\.png/);
-          return (matchA ? Number(matchA[1]) : 0) - (matchB ? Number(matchB[1]) : 0);
-        });
+      const orderedFrames = sortFrameFiles(frameFiles);
 
       if (orderedFrames.length > 0) {
         const inputPaths = orderedFrames.map((f) => path.join(framesDir, f));

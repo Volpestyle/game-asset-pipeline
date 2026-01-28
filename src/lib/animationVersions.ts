@@ -34,6 +34,8 @@ type AnimationSnapshot = Pick<
   | "generationLoop"
   | "generationStartImageUrl"
   | "generationEndImageUrl"
+  | "generationContinuationEnabled"
+  | "generationContinuationVideoUrl"
   | "extractFps"
   | "loopMode"
   | "sheetColumns"
@@ -94,6 +96,9 @@ function buildSnapshot(animation: Animation): AnimationSnapshot {
     generationLoop: animation.generationLoop,
     generationStartImageUrl: animation.generationStartImageUrl ?? undefined,
     generationEndImageUrl: animation.generationEndImageUrl ?? undefined,
+    generationContinuationEnabled: animation.generationContinuationEnabled,
+    generationContinuationVideoUrl:
+      animation.generationContinuationVideoUrl ?? undefined,
     extractFps: animation.extractFps,
     loopMode: animation.loopMode,
     sheetColumns: animation.sheetColumns,
@@ -257,6 +262,12 @@ function mapSnapshotUrls(
       versionId,
       direction
     ),
+    generationContinuationVideoUrl: mapUrl(
+      snapshot.generationContinuationVideoUrl,
+      animationId,
+      versionId,
+      direction
+    ),
     sourceVideoUrl: mapUrl(
       snapshot.sourceVideoUrl,
       animationId,
@@ -311,9 +322,14 @@ async function writeVersionSnapshot(
 
   const generatedDir = storagePath("animations", animationId, "generated");
   const keyframesDir = storagePath("animations", animationId, "keyframes");
+  const continuationDir = storagePath("animations", animationId, "continuation");
 
   await replaceDirWithCopy(generatedDir, path.join(versionDir, "generated"));
   await replaceDirWithCopy(keyframesDir, path.join(versionDir, "keyframes"));
+  await replaceDirWithCopy(
+    continuationDir,
+    path.join(versionDir, "continuation")
+  );
 
   const snapshot = mapSnapshotUrls(
     buildSnapshot(animation),
@@ -466,6 +482,7 @@ export async function loadAnimationVersion(
 
   const generatedDir = storagePath("animations", animationId, "generated");
   const keyframesDir = storagePath("animations", animationId, "keyframes");
+  const continuationDir = storagePath("animations", animationId, "continuation");
   const exportsDir = storagePath("animations", animationId, "exports");
 
   await replaceDirWithCopy(
@@ -475,6 +492,10 @@ export async function loadAnimationVersion(
   await replaceDirWithCopy(
     path.join(getVersionDir(animationId, versionId), "keyframes"),
     keyframesDir
+  );
+  await replaceDirWithCopy(
+    path.join(getVersionDir(animationId, versionId), "continuation"),
+    continuationDir
   );
   await fs.rm(exportsDir, { recursive: true, force: true });
   await ensureDir(exportsDir);
