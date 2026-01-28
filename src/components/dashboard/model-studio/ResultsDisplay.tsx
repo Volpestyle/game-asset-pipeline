@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, Play, MediaImageList } from "iconoir-react";
+import { Download, MediaImageList } from "iconoir-react";
 
 type StudioResult = {
   type: "video" | "image";
@@ -68,8 +68,6 @@ export function ResultsDisplay({ results, isLoading }: ResultsDisplayProps) {
                   loop
                   className="w-full h-full object-contain"
                 />
-              </div>
-              <div className="p-2 flex justify-end">
                 <button
                   type="button"
                   onClick={() =>
@@ -78,10 +76,10 @@ export function ResultsDisplay({ results, isLoading }: ResultsDisplayProps) {
                       `studio_video_${result.timestamp}.mp4`
                     )
                   }
-                  className="px-3 py-1.5 text-xs flex items-center gap-2 bg-secondary hover:bg-secondary/80 transition-colors rounded"
+                  className="absolute bottom-2 right-2 px-2 py-1 text-[10px] flex items-center gap-1 bg-black/70 text-white rounded"
+                  aria-label="Download video"
                 >
                   <Download className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  Download
                 </button>
               </div>
             </div>
@@ -110,6 +108,7 @@ export function ResultsDisplay({ results, isLoading }: ResultsDisplayProps) {
                         )
                       }
                       className="absolute bottom-2 right-2 px-2 py-1 text-[10px] flex items-center gap-1 bg-black/70 text-white rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                      aria-label={`Download image ${imgIndex + 1}`}
                     >
                       <Download className="w-3 h-3" strokeWidth={1.5} />
                     </button>

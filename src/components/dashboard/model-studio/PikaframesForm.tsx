@@ -3,18 +3,21 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { Upload, Xmark } from "iconoir-react";
 import {
+  getVideoSecondsOptions,
+  getVideoSizeOptions,
+} from "@/lib/ai/soraConstraints";
+import {
   buildModelStudioKey,
-  readStoredBoolean,
   readStoredNumber,
   readStoredString,
-  writeStoredBoolean,
   writeStoredNumber,
   writeStoredString,
 } from "@/lib/modelStudioStorage";
-import type { ToonCrafterParameters } from "@/types/studio";
+import type { PikaframesParameters } from "@/types/studio";
 
-type ToonCrafterFormProps = {
-  onSubmit: (parameters: ToonCrafterParameters) => void;
+type PikaframesFormProps = {
+  modelId: string;
+  onSubmit: (parameters: PikaframesParameters) => void;
   isLoading: boolean;
 };
 
@@ -35,28 +38,32 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-export function ToonCrafterForm({ onSubmit, isLoading }: ToonCrafterFormProps) {
-  const storageScope = "tooncrafter";
-  const promptKey = buildModelStudioKey(storageScope, null, "prompt");
-  const maxWidthKey = buildModelStudioKey(storageScope, null, "maxWidth");
-  const maxHeightKey = buildModelStudioKey(storageScope, null, "maxHeight");
-  const loopKey = buildModelStudioKey(storageScope, null, "loop");
-  const interpolateKey = buildModelStudioKey(storageScope, null, "interpolate");
-  const colorKey = buildModelStudioKey(storageScope, null, "colorCorrection");
-  const negativeKey = buildModelStudioKey(storageScope, null, "negativePrompt");
-  const seedKey = buildModelStudioKey(storageScope, null, "seed");
+export function PikaframesForm({
+  modelId,
+  onSubmit,
+  isLoading,
+}: PikaframesFormProps) {
+  const sizeOptions = getVideoSizeOptions(modelId);
+  const secondsOptions = getVideoSecondsOptions(modelId);
+
+  const storageScope = "pikaframes";
+  const promptKey = buildModelStudioKey(storageScope, modelId, "prompt");
+  const negativeKey = buildModelStudioKey(storageScope, modelId, "negativePrompt");
+  const seedKey = buildModelStudioKey(storageScope, modelId, "seed");
+  const sizeKey = buildModelStudioKey(storageScope, modelId, "size");
+  const secondsKey = buildModelStudioKey(storageScope, modelId, "seconds");
+
+  const defaultSize = sizeOptions[0] ?? "1280x720";
+  const defaultSeconds = secondsOptions[0] ?? 4;
 
   const [storageError, setStorageError] = useState<string | null>(null);
   const [storageLoaded, setStorageLoaded] = useState(false);
   const [prompt, setPrompt] = useState("");
-  const [keyframes, setKeyframes] = useState<string[]>([]);
-  const [maxWidth, setMaxWidth] = useState(512);
-  const [maxHeight, setMaxHeight] = useState(512);
-  const [loop, setLoop] = useState(false);
-  const [interpolate, setInterpolate] = useState(false);
-  const [colorCorrection, setColorCorrection] = useState(true);
   const [negativePrompt, setNegativePrompt] = useState("");
   const [seed, setSeed] = useState<number | "">("");
+  const [size, setSize] = useState(defaultSize);
+  const [seconds, setSeconds] = useState(defaultSeconds);
+  const [keyframes, setKeyframes] = useState<string[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -66,79 +73,70 @@ export function ToonCrafterForm({ onSubmit, isLoading }: ToonCrafterFormProps) {
     const promptResult = readStoredString(promptKey);
     if (promptResult.error) errors.push(promptResult.error);
 
-    const maxWidthResult = readStoredNumber(maxWidthKey);
-    if (maxWidthResult.error) errors.push(maxWidthResult.error);
-
-    const maxHeightResult = readStoredNumber(maxHeightKey);
-    if (maxHeightResult.error) errors.push(maxHeightResult.error);
-
-    const loopResult = readStoredBoolean(loopKey);
-    if (loopResult.error) errors.push(loopResult.error);
-
-    const interpolateResult = readStoredBoolean(interpolateKey);
-    if (interpolateResult.error) errors.push(interpolateResult.error);
-
-    const colorResult = readStoredBoolean(colorKey);
-    if (colorResult.error) errors.push(colorResult.error);
-
     const negativeResult = readStoredString(negativeKey);
     if (negativeResult.error) errors.push(negativeResult.error);
 
     const seedResult = readStoredNumber(seedKey);
     if (seedResult.error) errors.push(seedResult.error);
 
+    const sizeResult = readStoredString(sizeKey);
+    if (sizeResult.error) errors.push(sizeResult.error);
+
+    const secondsResult = readStoredNumber(secondsKey);
+    if (secondsResult.error) errors.push(secondsResult.error);
+
+    const resolvedSize =
+      sizeResult.value && sizeOptions.includes(sizeResult.value)
+        ? sizeResult.value
+        : defaultSize;
+
+    const resolvedSeconds =
+      typeof secondsResult.value === "number" &&
+      secondsOptions.includes(secondsResult.value)
+        ? secondsResult.value
+        : defaultSeconds;
+
     setPrompt(promptResult.value ?? "");
-    setMaxWidth(maxWidthResult.value ?? 512);
-    setMaxHeight(maxHeightResult.value ?? 512);
-    setLoop(loopResult.value ?? false);
-    setInterpolate(interpolateResult.value ?? false);
-    setColorCorrection(colorResult.value ?? true);
     setNegativePrompt(negativeResult.value ?? "");
     setSeed(typeof seedResult.value === "number" ? seedResult.value : "");
+    setSize(resolvedSize);
+    setSeconds(resolvedSeconds);
     setStorageError(errors[0] ?? null);
     setStorageLoaded(true);
   }, [
     promptKey,
-    maxWidthKey,
-    maxHeightKey,
-    loopKey,
-    interpolateKey,
-    colorKey,
     negativeKey,
     seedKey,
+    sizeKey,
+    secondsKey,
+    sizeOptions,
+    secondsOptions,
+    defaultSize,
+    defaultSeconds,
   ]);
 
   useEffect(() => {
     if (!storageLoaded) return;
     const errors = [
       writeStoredString(promptKey, prompt),
-      writeStoredNumber(maxWidthKey, maxWidth),
-      writeStoredNumber(maxHeightKey, maxHeight),
-      writeStoredBoolean(loopKey, loop),
-      writeStoredBoolean(interpolateKey, interpolate),
-      writeStoredBoolean(colorKey, colorCorrection),
       writeStoredString(negativeKey, negativePrompt),
       writeStoredNumber(seedKey, typeof seed === "number" ? seed : null),
+      writeStoredString(sizeKey, size),
+      writeStoredNumber(secondsKey, seconds),
     ].filter((value): value is string => typeof value === "string");
 
     setStorageError(errors[0] ?? null);
   }, [
     prompt,
-    maxWidth,
-    maxHeight,
-    loop,
-    interpolate,
-    colorCorrection,
     negativePrompt,
     seed,
+    size,
+    seconds,
     promptKey,
-    maxWidthKey,
-    maxHeightKey,
-    loopKey,
-    interpolateKey,
-    colorKey,
     negativeKey,
     seedKey,
+    sizeKey,
+    secondsKey,
     storageLoaded,
   ]);
 
@@ -147,14 +145,14 @@ export function ToonCrafterForm({ onSubmit, isLoading }: ToonCrafterFormProps) {
       const files = e.target.files;
       if (!files) return;
 
-      const newKeyframes: string[] = [];
-      for (let i = 0; i < files.length; i++) {
-        if (keyframes.length + newKeyframes.length >= 10) break;
+      const nextFrames: string[] = [];
+      for (let i = 0; i < files.length; i += 1) {
+        if (keyframes.length + nextFrames.length >= 5) break;
         const base64 = await fileToBase64(files[i]);
-        newKeyframes.push(base64);
+        nextFrames.push(base64);
       }
 
-      setKeyframes((prev) => [...prev, ...newKeyframes].slice(0, 10));
+      setKeyframes((prev) => [...prev, ...nextFrames].slice(0, 5));
 
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -172,18 +170,20 @@ export function ToonCrafterForm({ onSubmit, isLoading }: ToonCrafterFormProps) {
       e.preventDefault();
       if (keyframes.length < 2) return;
 
-      const parameters: ToonCrafterParameters = {
-        prompt: prompt.trim(),
+      const parameters: PikaframesParameters = {
         keyframes,
-        maxWidth,
-        maxHeight,
-        loop,
-        interpolate,
-        colorCorrection,
+        size,
+        seconds,
       };
 
-      if (negativePrompt.trim()) {
-        parameters.negativePrompt = negativePrompt.trim();
+      const trimmedPrompt = prompt.trim();
+      if (trimmedPrompt) {
+        parameters.prompt = trimmedPrompt;
+      }
+
+      const trimmedNegative = negativePrompt.trim();
+      if (trimmedNegative) {
+        parameters.negativePrompt = trimmedNegative;
       }
 
       if (typeof seed === "number" && Number.isFinite(seed)) {
@@ -192,18 +192,7 @@ export function ToonCrafterForm({ onSubmit, isLoading }: ToonCrafterFormProps) {
 
       onSubmit(parameters);
     },
-    [
-      prompt,
-      keyframes,
-      maxWidth,
-      maxHeight,
-      loop,
-      interpolate,
-      colorCorrection,
-      negativePrompt,
-      seed,
-      onSubmit,
-    ]
+    [keyframes, size, seconds, prompt, negativePrompt, seed, onSubmit]
   );
 
   return (
@@ -220,7 +209,7 @@ export function ToonCrafterForm({ onSubmit, isLoading }: ToonCrafterFormProps) {
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Describe the animation (or leave empty)..."
+          placeholder="Describe the transitions (optional)..."
           className="w-full px-3 py-2 text-xs bg-background border border-border rounded resize-none h-16 focus:outline-none focus:ring-1 focus:ring-primary"
         />
       </div>
@@ -228,9 +217,9 @@ export function ToonCrafterForm({ onSubmit, isLoading }: ToonCrafterFormProps) {
       <div>
         <div className="flex items-center justify-between mb-1">
           <label className="text-xs text-muted-foreground">
-            Keyframes ({keyframes.length}/10)
+            Keyframes ({keyframes.length}/5)
           </label>
-          {keyframes.length < 10 && (
+          {keyframes.length < 5 && (
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
@@ -257,15 +246,15 @@ export function ToonCrafterForm({ onSubmit, isLoading }: ToonCrafterFormProps) {
           >
             <Upload className="w-5 h-5 text-muted-foreground" strokeWidth={1.5} />
             <span className="text-muted-foreground">
-              Upload 2-10 keyframe images
+              Upload 2-5 keyframe images
             </span>
           </button>
         ) : (
           <div className="grid grid-cols-5 gap-2">
-            {keyframes.map((kf, index) => (
+            {keyframes.map((frame, index) => (
               <div key={index} className="relative group">
                 <img
-                  src={kf}
+                  src={frame}
                   alt={`Keyframe ${index + 1}`}
                   className="w-full aspect-square object-cover border border-border rounded"
                 />
@@ -293,65 +282,40 @@ export function ToonCrafterForm({ onSubmit, isLoading }: ToonCrafterFormProps) {
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs text-muted-foreground mb-1">
-            Max Width
+            Size
           </label>
-          <input
-            type="number"
-            value={maxWidth}
-            onChange={(e) => setMaxWidth(Number(e.target.value))}
-            min={128}
-            max={768}
-            step={8}
+          <select
+            value={size}
+            onChange={(e) => setSize(e.target.value)}
             className="w-full px-3 py-2 text-xs bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
-          />
+          >
+            {sizeOptions.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div>
           <label className="block text-xs text-muted-foreground mb-1">
-            Max Height
+            Total Duration
           </label>
-          <input
-            type="number"
-            value={maxHeight}
-            onChange={(e) => setMaxHeight(Number(e.target.value))}
-            min={128}
-            max={768}
-            step={8}
+          <select
+            value={seconds}
+            onChange={(e) => setSeconds(Number(e.target.value))}
             className="w-full px-3 py-2 text-xs bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
-          />
+          >
+            {secondsOptions.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}s
+              </option>
+            ))}
+          </select>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            Duration is split evenly across transitions.
+          </p>
         </div>
-      </div>
-
-      <div className="flex flex-wrap gap-4">
-        <label className="flex items-center gap-2 text-xs cursor-pointer">
-          <input
-            type="checkbox"
-            checked={loop}
-            onChange={(e) => setLoop(e.target.checked)}
-            className="w-3.5 h-3.5"
-          />
-          Loop
-        </label>
-
-        <label className="flex items-center gap-2 text-xs cursor-pointer">
-          <input
-            type="checkbox"
-            checked={interpolate}
-            onChange={(e) => setInterpolate(e.target.checked)}
-            className="w-3.5 h-3.5"
-          />
-          Interpolate
-        </label>
-
-        <label className="flex items-center gap-2 text-xs cursor-pointer">
-          <input
-            type="checkbox"
-            checked={colorCorrection}
-            onChange={(e) => setColorCorrection(e.target.checked)}
-            className="w-3.5 h-3.5"
-          />
-          Color Correction
-        </label>
       </div>
 
       <div>
@@ -374,9 +338,7 @@ export function ToonCrafterForm({ onSubmit, isLoading }: ToonCrafterFormProps) {
         <input
           type="number"
           value={seed}
-          onChange={(e) =>
-            setSeed(e.target.value ? Number(e.target.value) : "")
-          }
+          onChange={(e) => setSeed(e.target.value ? Number(e.target.value) : "")}
           placeholder="Random"
           className="w-full px-3 py-2 text-xs bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
         />
