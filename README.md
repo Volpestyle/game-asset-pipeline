@@ -113,6 +113,8 @@ RD_PLUS_MODEL=             # Replicate rd-plus model (optional, defaults to retr
 RD_PLUS_VERSION=           # Replicate rd-plus version (optional)
 NANO_BANANA_MODEL=         # Replicate nano-banana-pro model (optional, defaults to google/nano-banana-pro)
 NANO_BANANA_VERSION=       # Replicate nano-banana-pro version (optional)
+FLUX_2_MAX_MODEL=          # Replicate flux-2-max model (optional, defaults to black-forest-labs/flux-2-max)
+FLUX_2_MAX_VERSION=        # Replicate flux-2-max version (optional)
 LOG_LEVEL=                 # Log level: debug | info | warn | error (default: info)
 LOG_COLOR=                 # Enable ANSI colors in logs (default: true)
 ```

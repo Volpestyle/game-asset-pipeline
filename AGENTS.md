@@ -3,3 +3,4 @@
 - always use proper logging methods to make any complexity easily debuggable via logs
 - always include proper and visible error handling
 - never use toast ui messages
+- for all ai api docs, see: docs/models

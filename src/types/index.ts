@@ -64,7 +64,7 @@ export interface SpritesheetLayout {
 
 export type BackgroundRemovalMode = "spritesheet" | "per-frame";
 
-export type GenerationProvider = "openai" | "replicate";
+export type GenerationProvider = "openai" | "replicate" | "fal" | "vertex";
 
 export interface WorkingReference {
   url: string;
@@ -81,7 +81,7 @@ export interface WorkingSpec {
   bgKeyColor: string;
 }
 
-// Animation-level reference images (for multi-image models like nano-banana-pro)
+// Animation-level reference images (for multi-image models like nano-banana-pro or flux-2-max)
 export interface AnimationReference {
   id: string;
   url: string;
@@ -113,12 +113,32 @@ export interface Animation {
   generationLoop?: boolean;
   generationStartImageUrl?: string | null;
   generationEndImageUrl?: string | null;
+  generationContinuationEnabled?: boolean;
+  generationContinuationVideoUrl?: string | null;
   generationNegativePrompt?: string | null;
+  generationSeed?: number | null;
+  generationReferenceImageUrls?: string[];
+  generationConcepts?: string[];
+  generationEffect?: string | null;
   tooncrafterInterpolate?: boolean;
   tooncrafterColorCorrection?: boolean;
   tooncrafterSeed?: number | null;
   tooncrafterNegativePrompt?: string | null;
   tooncrafterEmptyPrompt?: boolean;
+  wanSeed?: number | null;
+  wanNumInferenceSteps?: number | null;
+  wanEnableSafetyChecker?: boolean;
+  wanEnableOutputSafetyChecker?: boolean;
+  wanEnablePromptExpansion?: boolean;
+  wanAcceleration?: "none" | "regular";
+  wanGuidanceScale?: number | null;
+  wanGuidanceScale2?: number | null;
+  wanShift?: number | null;
+  wanInterpolatorModel?: "none" | "film" | "rife";
+  wanNumInterpolatedFrames?: number | null;
+  wanAdjustFpsForInterpolation?: boolean;
+  wanVideoQuality?: "low" | "medium" | "high" | "maximum";
+  wanVideoWriteMode?: "fast" | "balanced" | "small";
   extractFps?: number;
   loopMode?: "loop" | "pingpong";
   sheetColumns?: number;
@@ -171,7 +191,7 @@ export interface Keyframe {
   frameIndex: number;
   image?: string;
   prompt?: string;
-  model?: 'rd-fast' | 'rd-plus' | 'nano-banana-pro';
+  model?: 'rd-fast' | 'rd-plus' | 'nano-banana-pro' | 'flux-2-max';
   strength?: number;
   generations?: KeyframeGeneration[];
   // Advanced rd-fast/rd-plus options
@@ -193,7 +213,7 @@ export interface KeyframeGeneration {
   createdAt: string;
   source: "generate" | "refine" | "upload" | "select";
   prompt?: string;
-  model?: 'rd-fast' | 'rd-plus' | 'nano-banana-pro';
+  model?: 'rd-fast' | 'rd-plus' | 'nano-banana-pro' | 'flux-2-max';
   style?: string;
   strength?: number;
   inputPalette?: string;
@@ -202,6 +222,9 @@ export interface KeyframeGeneration {
   removeBg?: boolean;
   seed?: number;
   bypassPromptExpansion?: boolean;
+  numImages?: number;
+  outputFormat?: string;
+  safetyFilterLevel?: string;
   saved?: boolean;
 }
 
