@@ -2,10 +2,12 @@ import { promises as fs } from "fs";
 import path from "path";
 import sharp from "sharp";
 import { removeBackgroundFromFramesDir } from "@/lib/backgroundRemoval";
+import { buildGeneratedFramesFromSequence } from "@/lib/frameOps";
 import { buildSpritesheetLayout, sortFrameFiles } from "@/lib/frameUtils";
 import { composeSpritesheet } from "@/lib/spritesheet";
 import { logger } from "@/lib/logger";
 import { fileExists, readJson, storagePath, writeJson } from "@/lib/storage";
+import type { GeneratedFrame } from "@/types";
 
 export const runtime = "nodejs";
 
@@ -45,8 +47,6 @@ export async function POST(
   }
 
   const framesDir = storagePath("animations", id, "generated", "frames");
-  await fs.rm(framesDir, { recursive: true, force: true });
-  await fs.mkdir(framesDir, { recursive: true });
 
   let frameWidth = Number(animation.frameWidth ?? animation.spriteSize ?? 0);
   let frameHeight = Number(animation.frameHeight ?? animation.spriteSize ?? 0);
@@ -57,26 +57,23 @@ export async function POST(
     frameHeight = metadata.height ?? 1;
   }
 
-  const baseSequence = rawFiles;
-  const sequence =
-    loopMode === "pingpong"
-      ? baseSequence.concat(baseSequence.slice(1, -1).reverse())
-      : baseSequence;
-
-  const generatedFrames = [];
-  for (let index = 0; index < sequence.length; index += 1) {
-    const inputName = sequence[index];
-    const inputPath = path.join(rawFramesDir, inputName);
-    const outputName = `frame_${String(index).padStart(3, "0")}.png`;
-    const outputPath = path.join(framesDir, outputName);
-    await fs.copyFile(inputPath, outputPath);
-    generatedFrames.push({
-      frameIndex: index,
-      url: `/api/storage/animations/${id}/generated/frames/${outputName}`,
-      isKeyframe: false,
-      generatedAt: new Date().toISOString(),
+  let generatedFrames: GeneratedFrame[];
+  try {
+    generatedFrames = await buildGeneratedFramesFromSequence({
+      animationId: id,
+      rawFramesDir,
+      outputDir: framesDir,
+      baseSequence: rawFiles,
+      loopMode,
       source: "rebuild",
     });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to rebuild frames.";
+    logger.error("Rebuild: failed to copy frames", {
+      animationId: id,
+      error: message,
+    });
+    return Response.json({ error: message }, { status: 500 });
   }
 
   if (applyBackgroundRemoval) {

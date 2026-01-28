@@ -58,6 +58,7 @@ export async function POST(request: Request) {
     promptConcise,
     promptVerbose,
     generationNegativePrompt,
+    generationContinuationEnabled,
     extractFps,
     loopMode,
     sheetColumns,
@@ -123,9 +124,17 @@ export async function POST(request: Request) {
     : 12;
   const resolvedModel = String(generationModel ?? "sora-2");
   const requestedProvider = String(generationProvider ?? "").trim();
-  if (requestedProvider !== "openai" && requestedProvider !== "replicate") {
+  if (
+    requestedProvider !== "openai" &&
+    requestedProvider !== "replicate" &&
+    requestedProvider !== "fal" &&
+    requestedProvider !== "vertex"
+  ) {
     return Response.json(
-      { error: "Generation provider is required. Select OpenAI or Replicate." },
+      {
+        error:
+          "Generation provider is required. Select OpenAI, Replicate, Fal, or Vertex AI.",
+      },
       { status: 400 }
     );
   }
@@ -158,6 +167,7 @@ export async function POST(request: Request) {
     typeof generationNegativePrompt === "string"
       ? generationNegativePrompt.trim()
       : "";
+  const resolvedContinuationEnabled = generationContinuationEnabled === true;
   const artStyle = characterStyle || "pixel-art";
   const autoPromptConcise = buildVideoPrompt({
     description: String(description ?? ""),
@@ -200,6 +210,8 @@ export async function POST(request: Request) {
     generationLoop: generationLoop === true,
     generationStartImageUrl: null,
     generationEndImageUrl: null,
+    generationContinuationEnabled: resolvedContinuationEnabled,
+    generationContinuationVideoUrl: null,
     generationNegativePrompt: resolvedGenerationNegativePrompt
       ? resolvedGenerationNegativePrompt
       : null,

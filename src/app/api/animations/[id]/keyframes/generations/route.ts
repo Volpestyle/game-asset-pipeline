@@ -55,7 +55,12 @@ function toOptionalBoolean(value: boolean | string | null | undefined) {
 }
 
 function normalizeModel(value: string | undefined) {
-  if (value === "rd-fast" || value === "rd-plus" || value === "nano-banana-pro") {
+  if (
+    value === "rd-fast" ||
+    value === "rd-plus" ||
+    value === "nano-banana-pro" ||
+    value === "flux-2-max"
+  ) {
     return value;
   }
   return undefined;
@@ -83,6 +88,9 @@ function buildSavedGeneration(raw: KeyframeGeneration): KeyframeGeneration {
     removeBg: toOptionalBoolean(raw.removeBg),
     seed: toOptionalNumber(raw.seed),
     bypassPromptExpansion: toOptionalBoolean(raw.bypassPromptExpansion),
+    numImages: toOptionalNumber(raw.numImages),
+    outputFormat: toOptionalString(raw.outputFormat),
+    safetyFilterLevel: toOptionalString(raw.safetyFilterLevel),
     saved: true,
   };
 }

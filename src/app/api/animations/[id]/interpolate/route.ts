@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import sharp from "sharp";
 import { runReplicateModel } from "@/lib/ai/replicate";
 import { bufferToDataUrl } from "@/lib/dataUrl";
+import { logger } from "@/lib/logger";
 import { getShutdownSignal } from "@/lib/shutdown";
 import { composeSpritesheet, writeFrameImage } from "@/lib/spritesheet";
 import {
@@ -23,6 +24,9 @@ const RD_PLUS_VERSION = process.env.RD_PLUS_VERSION?.trim() || undefined;
 const NANO_BANANA_MODEL =
   process.env.NANO_BANANA_MODEL?.trim() || "google/nano-banana-pro";
 const NANO_BANANA_VERSION = process.env.NANO_BANANA_VERSION?.trim() || undefined;
+const FLUX_2_MAX_MODEL =
+  process.env.FLUX_2_MAX_MODEL?.trim() || "black-forest-labs/flux-2-max";
+const FLUX_2_MAX_VERSION = process.env.FLUX_2_MAX_VERSION?.trim() || undefined;
 
 const MIN_STRENGTH = 0.15;
 const MAX_STRENGTH = 0.35;
@@ -155,9 +159,11 @@ export async function POST(
   const model =
     modelInput === "nano-banana-pro"
       ? "nano-banana-pro"
-      : modelInput === "rd-fast"
-        ? "rd-fast"
-        : "rd-plus";
+      : modelInput === "flux-2-max"
+        ? "flux-2-max"
+        : modelInput === "rd-fast"
+          ? "rd-fast"
+          : "rd-plus";
   const styleInput = String(payload?.style ?? "").trim();
   const removeBg = payload?.removeBg === true;
 
@@ -166,6 +172,7 @@ export async function POST(
   await writeJson(animationPath, { ...animation, status: "generating", updatedAt: now });
 
   try {
+    logger.info("Interpolation started", { animationId: id, model });
     const keyframes = (animation.keyframes as Keyframe[] | undefined) ?? [];
     const usableKeyframes = keyframes
       .filter((kf) => kf.image)
@@ -187,20 +194,25 @@ export async function POST(
     );
 
     const isNano = model === "nano-banana-pro";
+    const isFlux = model === "flux-2-max";
     const isRdFast = model === "rd-fast";
     const modelId = isNano
       ? NANO_BANANA_MODEL
-      : isRdFast
-        ? RD_FAST_MODEL
-        : RD_PLUS_MODEL;
+      : isFlux
+        ? FLUX_2_MAX_MODEL
+        : isRdFast
+          ? RD_FAST_MODEL
+          : RD_PLUS_MODEL;
     const version = isNano
       ? NANO_BANANA_VERSION
-      : isRdFast
-        ? RD_FAST_VERSION
-        : RD_PLUS_VERSION;
+      : isFlux
+        ? FLUX_2_MAX_VERSION
+        : isRdFast
+          ? RD_FAST_VERSION
+          : RD_PLUS_VERSION;
 
     const defaultStyle = isRdFast ? "game_asset" : "default";
-    const style = isNano ? "" : styleInput || defaultStyle;
+    const style = isNano || isFlux ? "" : styleInput || defaultStyle;
 
     const framesDir = storagePath("animations", id, "generated", "frames");
     const framesMap = new Map<number, GeneratedFrame>();
@@ -258,6 +270,14 @@ export async function POST(
           if (resolution) {
             input.resolution = resolution;
           }
+        } else if (isFlux) {
+          input = {
+            prompt,
+            output_format: "png",
+            input_images: [inputImage],
+            aspect_ratio: "match_input_image",
+            resolution: "match_input_image",
+          };
         } else {
           input = {
             prompt,
@@ -356,6 +376,10 @@ export async function POST(
 
     return Response.json({ animation: updated });
   } catch (error) {
+    logger.error("Interpolation failed", {
+      animationId: id,
+      message: error instanceof Error ? error.message : "Interpolation failed.",
+    });
     const updated = {
       ...animation,
       status: "failed",

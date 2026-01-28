@@ -3,8 +3,9 @@ import path from "path";
 import { coerceVideoSizeForModel, getDefaultVideoSize } from "@/lib/ai/soraConstraints";
 import { createAnimationVersion } from "@/lib/animationVersions";
 import { DEFAULT_BG_KEY } from "@/lib/color";
-import { runFfmpeg } from "@/lib/ffmpeg";
+import { buildGeneratedFramesFromSequence } from "@/lib/frameOps";
 import { buildSpritesheetLayout, sortFrameFiles } from "@/lib/frameUtils";
+import { logger } from "@/lib/logger";
 import { composeSpritesheet } from "@/lib/spritesheet";
 import { parseSize } from "@/lib/size";
 import {
@@ -14,52 +15,12 @@ import {
   storagePath,
   writeJson,
 } from "@/lib/storage";
+import { extractVideoFrames } from "@/lib/videoFrames";
+import type { GeneratedFrame } from "@/types";
 
 export const runtime = "nodejs";
 
 const ALLOWED_FPS = [6, 8, 12, 24];
-
-async function extractVideoFrames(options: {
-  videoPath: string;
-  outputDir: string;
-  fps: number;
-  frameWidth: number;
-  frameHeight: number;
-  roi?: { x: number; y: number; w: number; h: number };
-  padColor?: string;
-}) {
-  await fs.rm(options.outputDir, { recursive: true, force: true });
-  await fs.mkdir(options.outputDir, { recursive: true });
-  const filters: string[] = [];
-  if (options.roi && options.roi.w > 0 && options.roi.h > 0) {
-    filters.push(
-      `crop=${options.roi.w}:${options.roi.h}:${options.roi.x}:${options.roi.y}`
-    );
-  }
-  const rawPadColor = (options.padColor ?? DEFAULT_BG_KEY).replace("#", "").trim();
-  const padColor = `0x${rawPadColor.length === 6 ? rawPadColor : "FF00FF"}`;
-  filters.push(
-    `scale=${options.frameWidth}:${options.frameHeight}:flags=neighbor:force_original_aspect_ratio=decrease`
-  );
-  filters.push(
-    `pad=${options.frameWidth}:${options.frameHeight}:(ow-iw)/2:(oh-ih)/2:color=${padColor}`
-  );
-  filters.push("setsar=1");
-  filters.push(`fps=${options.fps}`);
-  const args = [
-    "-hide_banner",
-    "-y",
-    "-i",
-    options.videoPath,
-    "-vf",
-    filters.join(","),
-    "-start_number",
-    "0",
-    path.join(options.outputDir, "frame_%03d.png"),
-  ];
-  await runFfmpeg(args);
-}
-
 
 export async function POST(
   request: Request,
@@ -194,18 +155,25 @@ export async function POST(
 
   const rawFramesDir = path.join(generatedDir, "frames_raw");
   const framesDir = path.join(generatedDir, "frames");
-  await extractVideoFrames({
-    videoPath,
-    outputDir: rawFramesDir,
-    fps: extractFps,
-    frameWidth,
-    frameHeight,
-    roi,
-    padColor: bgKeyColor,
-  });
-
-  await fs.rm(framesDir, { recursive: true, force: true });
-  await fs.mkdir(framesDir, { recursive: true });
+  try {
+    await extractVideoFrames({
+      videoPath,
+      outputDir: rawFramesDir,
+      fps: extractFps,
+      frameWidth,
+      frameHeight,
+      roi,
+      padColor: bgKeyColor,
+      mode: "pad",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to extract frames.";
+    logger.error("Import video: frame extraction failed", {
+      animationId: id,
+      error: message,
+    });
+    return Response.json({ error: message }, { status: 500 });
+  }
 
   const rawFiles = sortFrameFiles(await fs.readdir(rawFramesDir));
   if (rawFiles.length === 0) {
@@ -214,27 +182,23 @@ export async function POST(
       { status: 400 }
     );
   }
-
-  const baseSequence = rawFiles;
-  const sequence =
-    loopMode === "pingpong"
-      ? baseSequence.concat(baseSequence.slice(1, -1).reverse())
-      : baseSequence;
-
-  const generatedFrames = [];
-  for (let index = 0; index < sequence.length; index += 1) {
-    const inputName = sequence[index];
-    const inputPath = path.join(rawFramesDir, inputName);
-    const outputName = `frame_${String(index).padStart(3, "0")}.png`;
-    const outputPath = path.join(framesDir, outputName);
-    await fs.copyFile(inputPath, outputPath);
-    generatedFrames.push({
-      frameIndex: index,
-      url: `/api/storage/animations/${id}/generated/frames/${outputName}`,
-      isKeyframe: false,
-      generatedAt: new Date().toISOString(),
+  let generatedFrames: GeneratedFrame[];
+  try {
+    generatedFrames = await buildGeneratedFramesFromSequence({
+      animationId: id,
+      rawFramesDir,
+      outputDir: framesDir,
+      baseSequence: rawFiles,
+      loopMode,
       source: "import",
     });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to build frames.";
+    logger.error("Import video: failed to build frames", {
+      animationId: id,
+      error: message,
+    });
+    return Response.json({ error: message }, { status: 500 });
   }
 
   const layout = buildSpritesheetLayout({

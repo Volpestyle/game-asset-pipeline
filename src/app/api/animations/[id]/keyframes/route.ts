@@ -3,6 +3,7 @@ import path from "path";
 import crypto from "crypto";
 import sharp from "sharp";
 import { runReplicateModel } from "@/lib/ai/replicate";
+import { logger } from "@/lib/logger";
 import { fileToDataUrl, getExtensionForMime, parseDataUrl } from "@/lib/dataUrl";
 import { getShutdownSignal } from "@/lib/shutdown";
 import { composeSpritesheet, writeFrameImage } from "@/lib/spritesheet";
@@ -26,6 +27,24 @@ const RD_PLUS_VERSION = process.env.RD_PLUS_VERSION?.trim() || undefined;
 const NANO_BANANA_MODEL =
   process.env.NANO_BANANA_MODEL?.trim() || "google/nano-banana-pro";
 const NANO_BANANA_VERSION = process.env.NANO_BANANA_VERSION?.trim() || undefined;
+const FLUX_2_MAX_MODEL =
+  process.env.FLUX_2_MAX_MODEL?.trim() || "black-forest-labs/flux-2-max";
+const FLUX_2_MAX_VERSION = process.env.FLUX_2_MAX_VERSION?.trim() || undefined;
+
+type FluxResolution = "0.5 MP" | "1 MP" | "2 MP" | "4 MP";
+
+function inferFluxResolution(
+  width: number,
+  height: number
+): FluxResolution | undefined {
+  if (!width || !height) return undefined;
+  const megaPixels = (width * height) / 1_000_000;
+  if (!Number.isFinite(megaPixels) || megaPixels <= 0) return undefined;
+  if (megaPixels <= 0.75) return "0.5 MP";
+  if (megaPixels <= 1.5) return "1 MP";
+  if (megaPixels <= 3) return "2 MP";
+  return "4 MP";
+}
 
 
 function parseNumber(value: FormDataEntryValue | null, fallback: number) {
@@ -96,9 +115,11 @@ export async function POST(
   const model =
     modelInput === "nano-banana-pro"
       ? "nano-banana-pro"
-      : modelInput === "rd-plus"
-        ? "rd-plus"
-        : "rd-fast";
+      : modelInput === "flux-2-max"
+        ? "flux-2-max"
+        : modelInput === "rd-plus"
+          ? "rd-plus"
+          : "rd-fast";
   const styleInput = String(formData.get("style") ?? "").trim();
   const selectedImageUrl = String(formData.get("imageUrl") ?? "").trim();
   const strength = parseNumber(formData.get("strength"), 0.4);
@@ -108,8 +129,14 @@ export async function POST(
   const tileY = parseBoolean(formData.get("tileY"));
   const seedRaw = formData.get("seed");
   const seed = seedRaw == null || seedRaw === "" ? null : Number(seedRaw);
+  const numImagesRaw = parseNumber(formData.get("numImages"), 1);
+  const outputFormatInput = String(formData.get("outputFormat") ?? "")
+    .trim()
+    .toLowerCase();
+  const safetyFilterInput = String(formData.get("safetyFilterLevel") ?? "")
+    .trim();
 
-  // Parse reference images array (for multi-image models like nano-banana-pro)
+  // Parse reference images array (for multi-image models like nano-banana-pro or flux-2-max)
   const referenceImagesRaw = formData.get("referenceImages");
   let referenceImageUrls: string[] = [];
   if (referenceImagesRaw && typeof referenceImagesRaw === "string") {
@@ -138,11 +165,25 @@ export async function POST(
 
   let outputBuffer: Buffer | null = null;
   let outputExt = ".png";
+  let generatedBuffers: Buffer[] = [];
+  let generatedFilenames: string[] = [];
+  let outputUrls: string[] = [];
   let paletteUrl: string | undefined;
   let resolvedStyle: string | undefined = styleInput || undefined;
+  let resolvedNumImages: number | null = null;
+  let resolvedOutputFormat: string | null = null;
+  let resolvedSafetyFilter: string | null = null;
   let selectedImageFilename: string | null = null;
 
   if (shouldGenerate) {
+    logger.info("Keyframe generation request", {
+      animationId: id,
+      frameIndex,
+      model,
+      mode,
+      referenceImageCount: referenceImageUrls.length,
+    });
+
     if (!process.env.REPLICATE_API_TOKEN) {
       return Response.json(
         { error: "Missing REPLICATE_API_TOKEN for generation." },
@@ -212,11 +253,42 @@ export async function POST(
       model === "nano-banana-pro" ? promptBase || "pixel art sprite" : promptBase;
 
     if (model === "nano-banana-pro") {
-      const input: Record<string, unknown> = {
-        prompt,
-        output_format: "png",
-        safety_filter_level: "block_only_high",
-      };
+    const input: Record<string, unknown> = {
+      prompt,
+    };
+
+    const allowedFormats = ["png", "jpg", "jpeg"];
+    const formatCandidate = outputFormatInput || "png";
+    const resolvedFormat = allowedFormats.includes(formatCandidate)
+      ? formatCandidate
+      : "png";
+    if (formatCandidate && !allowedFormats.includes(formatCandidate)) {
+      logger.warn("Nano Banana output format invalid", {
+        requested: formatCandidate,
+        resolved: resolvedFormat,
+      });
+    }
+    resolvedOutputFormat = resolvedFormat;
+    outputExt = resolvedFormat === "jpg" || resolvedFormat === "jpeg" ? ".jpg" : ".png";
+    input.output_format = resolvedFormat;
+
+    const safetyOptions = [
+      "block_only_high",
+      "block_medium_and_above",
+      "block_low_and_above",
+    ];
+    const safetyCandidate = safetyFilterInput || "block_only_high";
+    const resolvedSafety = safetyOptions.includes(safetyCandidate)
+      ? safetyCandidate
+      : "block_only_high";
+    if (safetyCandidate && !safetyOptions.includes(safetyCandidate)) {
+      logger.warn("Nano Banana safety filter invalid", {
+        requested: safetyCandidate,
+        resolved: resolvedSafety,
+      });
+    }
+    resolvedSafetyFilter = resolvedSafety;
+    input.safety_filter_level = resolvedSafety;
 
       const aspectRatio = inferAspectRatio(frameWidth, frameHeight);
       if (aspectRatio) {
@@ -251,19 +323,94 @@ export async function POST(
       });
 
       const output = prediction.output;
-      const outputUrl =
-        (Array.isArray(output) ? output[0] : output) as string | undefined;
-
-      if (!outputUrl) {
-        return Response.json({ error: "No output returned." }, { status: 500 });
+      if (typeof output === "string") {
+        outputUrls = [output];
+      } else if (Array.isArray(output)) {
+        outputUrls = output.filter((url) => typeof url === "string");
+      } else if (output && typeof output === "object" && "url" in output) {
+        const maybeUrl = output.url;
+        if (typeof maybeUrl === "string") {
+          outputUrls = [maybeUrl];
+        }
+      }
+    } else if (model === "flux-2-max") {
+      if (referenceImageUrls.length > 8) {
+        return Response.json(
+          { error: "Flux 2 Max supports up to 8 reference images." },
+          { status: 400 }
+        );
       }
 
-      const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
-      if (!outputResponse.ok) {
-        return Response.json({ error: "Failed to download output." }, { status: 500 });
+      const input: Record<string, unknown> = {
+        prompt,
+        output_format: "png",
+      };
+
+      const imageInputs: string[] = [];
+      let resolvedAspectRatio: string | undefined;
+      let resolvedResolution: string | undefined;
+      if (referenceImageUrls.length > 0) {
+        for (const url of referenceImageUrls) {
+          const refPath = storagePathFromUrl(url);
+          if (refPath && (await fileExists(refPath))) {
+            imageInputs.push(await fileToDataUrl(refPath));
+          }
+        }
+      } else if (inputImagePath) {
+        imageInputs.push(await fileToDataUrl(inputImagePath));
       }
-      outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
-      outputExt = ".png";
+
+      if (imageInputs.length > 0) {
+        input.input_images = imageInputs;
+        resolvedAspectRatio = "match_input_image";
+        resolvedResolution = "match_input_image";
+      } else {
+        const aspectRatio = inferAspectRatio(frameWidth, frameHeight);
+        if (aspectRatio) {
+          resolvedAspectRatio = aspectRatio;
+        }
+        const resolution = inferFluxResolution(frameWidth, frameHeight);
+        if (resolution) {
+          resolvedResolution = resolution;
+        }
+      }
+
+      if (resolvedAspectRatio) {
+        input.aspect_ratio = resolvedAspectRatio;
+      }
+      if (resolvedResolution) {
+        input.resolution = resolvedResolution;
+      }
+
+      if (Number.isFinite(seed)) {
+        input.seed = seed;
+      }
+
+      logger.info("Flux keyframe input resolved", {
+        animationId: id,
+        frameIndex,
+        imageCount: imageInputs.length,
+        aspectRatio: resolvedAspectRatio,
+        resolution: resolvedResolution,
+      });
+
+      const prediction = await runReplicateModel({
+        version: FLUX_2_MAX_VERSION,
+        model: FLUX_2_MAX_MODEL,
+        input,
+      });
+
+      const output = prediction.output;
+      if (typeof output === "string") {
+        outputUrls = [output];
+      } else if (Array.isArray(output)) {
+        outputUrls = output.filter((url) => typeof url === "string");
+      } else if (output && typeof output === "object" && "url" in output) {
+        const maybeUrl = output.url;
+        if (typeof maybeUrl === "string") {
+          outputUrls = [maybeUrl];
+        }
+      }
     } else {
       const usePlus = model === "rd-plus";
       const version = usePlus ? RD_PLUS_VERSION : RD_FAST_VERSION;
@@ -319,9 +466,20 @@ export async function POST(
         style,
         width: frameWidth,
         height: frameHeight,
-        num_images: 1,
         remove_bg: removeBg,
       };
+
+      const requestedNumImages = Number.isFinite(numImagesRaw)
+        ? Math.round(numImagesRaw)
+        : 1;
+      resolvedNumImages = Math.min(4, Math.max(1, requestedNumImages));
+      if (resolvedNumImages !== requestedNumImages) {
+        logger.warn("RD num_images clamped", {
+          requested: requestedNumImages,
+          resolved: resolvedNumImages,
+        });
+      }
+      input.num_images = resolvedNumImages;
 
       if (inputImagePath) {
         input.input_image = await fileToDataUrl(inputImagePath);
@@ -371,19 +529,41 @@ export async function POST(
       });
 
       const output = prediction.output;
-      const outputUrl =
-        (Array.isArray(output) ? output[0] : output) as string | undefined;
-
-      if (!outputUrl) {
-        return Response.json({ error: "No output returned." }, { status: 500 });
+      if (typeof output === "string") {
+        outputUrls = [output];
+      } else if (Array.isArray(output)) {
+        outputUrls = output.filter((url) => typeof url === "string");
+      } else if (output && typeof output === "object" && "url" in output) {
+        const maybeUrl = output.url;
+        if (typeof maybeUrl === "string") {
+          outputUrls = [maybeUrl];
+        }
       }
+    }
 
+    if (outputUrls.length === 0) {
+      return Response.json({ error: "No output returned." }, { status: 500 });
+    }
+
+    for (const outputUrl of outputUrls) {
       const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
       if (!outputResponse.ok) {
         return Response.json({ error: "Failed to download output." }, { status: 500 });
       }
-      outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
+      const buffer = Buffer.from(await outputResponse.arrayBuffer());
+      generatedBuffers.push(buffer);
     }
+
+    if (generatedBuffers.length === 0) {
+      return Response.json({ error: "No output returned." }, { status: 500 });
+    }
+
+    const generationTimestamp = Date.now();
+    generatedFilenames = generatedBuffers.map(
+      (_, index) =>
+        `frame_${String(frameIndex).padStart(3, "0")}_${generationTimestamp}_${index}${outputExt}`
+    );
+    outputBuffer = generatedBuffers[0];
   } else if (mode === "select") {
     if (paletteInput && typeof paletteInput === "string") {
       paletteUrl = paletteInput.trim() || undefined;
@@ -418,11 +598,22 @@ export async function POST(
 
   const filename =
     selectedImageFilename ??
+    generatedFilenames[0] ??
     `frame_${String(frameIndex).padStart(3, "0")}_${Date.now()}${outputExt}`;
   const keyframePath = storagePath("animations", id, "keyframes", filename);
   if (!selectedImageFilename) {
     await fs.mkdir(path.dirname(keyframePath), { recursive: true });
     await fs.writeFile(keyframePath, outputBuffer);
+  }
+
+  if (generatedFilenames.length > 1) {
+    for (let i = 1; i < generatedFilenames.length; i += 1) {
+      const name = generatedFilenames[i];
+      const buffer = generatedBuffers[i];
+      if (!buffer) continue;
+      const outputPath = storagePath("animations", id, "keyframes", name);
+      await fs.writeFile(outputPath, buffer);
+    }
   }
 
   const framesDir = storagePath("animations", id, "generated", "frames");
@@ -463,6 +654,10 @@ export async function POST(
   const normalizedStrength = Math.min(1, Math.max(0, strength));
   const normalizedSeed =
     typeof seed === "number" && Number.isFinite(seed) ? seed : undefined;
+  const normalizedNumImages =
+    typeof resolvedNumImages === "number" ? resolvedNumImages : undefined;
+  const outputFormatValue = resolvedOutputFormat ?? undefined;
+  const safetyFilterValue = resolvedSafetyFilter ?? undefined;
   const updatedKeyframe: Keyframe = {
     frameIndex,
     image: `/api/storage/animations/${id}/keyframes/${filename}`,
@@ -478,11 +673,14 @@ export async function POST(
     bypassPromptExpansion,
     updatedAt: new Date().toISOString(),
   };
-  const generationEntry: KeyframeGeneration | null =
-    shouldGenerate
-      ? {
+  const generationEntries: KeyframeGeneration[] = [];
+  if (shouldGenerate) {
+    const filenames =
+      generatedFilenames.length > 0 ? generatedFilenames : [filename];
+    for (const generatedName of filenames) {
+      generationEntries.push({
         id: crypto.randomUUID(),
-        image: `/api/storage/animations/${id}/keyframes/${filename}`,
+        image: `/api/storage/animations/${id}/keyframes/${generatedName}`,
         createdAt: new Date().toISOString(),
         source: mode,
         prompt: promptInput || existingKeyframe?.prompt,
@@ -495,9 +693,14 @@ export async function POST(
         removeBg,
         seed: normalizedSeed,
         bypassPromptExpansion,
+        numImages: normalizedNumImages,
+        outputFormat: outputFormatValue,
+        safetyFilterLevel: safetyFilterValue,
         saved: false,
-      }
-      : null;
+      });
+    }
+  }
+  const generationEntry = generationEntries[0] ?? null;
 
   const updatedKeyframes = updateKeyframes(keyframes, updatedKeyframe);
   const updatedAnimation: Record<string, unknown> = {
@@ -544,5 +747,6 @@ export async function POST(
     animation: updatedAnimation,
     keyframe: updatedKeyframe,
     generation: generationEntry,
+    generations: generationEntries.length > 0 ? generationEntries : undefined,
   });
 }

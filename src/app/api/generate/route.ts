@@ -1,12 +1,20 @@
 import { promises as fs } from "fs";
 import path from "path";
 import sharp from "sharp";
+import { runOpenAIGeneration } from "@/lib/generation/providers/openai";
 import { createPrediction, waitForPrediction } from "@/lib/ai/replicate";
 import {
-  createVideoJob,
-  downloadVideoContent,
-  pollVideoJob,
-} from "@/lib/ai/openai";
+  runPikaframes,
+  runWanVideo,
+  type WanRequest,
+  type PikaframesTransitionInput,
+} from "@/lib/ai/fal";
+import { buildPikaframesPlan } from "@/lib/ai/pikaframes";
+import {
+  clampWanFrames,
+  getWanAspectRatio,
+  getWanResolution,
+} from "@/lib/ai/wan";
 import {
   buildWorkingReference,
   normalizeImageToCanvas,
@@ -15,19 +23,20 @@ import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
 import { DEFAULT_BG_KEY, parseHexColor } from "@/lib/color";
 import { fileToDataUrl, bufferToDataUrl } from "@/lib/dataUrl";
 import { runFfmpeg } from "@/lib/ffmpeg";
-import { buildSpritesheetLayout, sortFrameFiles } from "@/lib/frameUtils";
+import { buildGeneratedFramesFromSequence } from "@/lib/frameOps";
+import { buildSpritesheetLayout, formatFrameFilename, sortFrameFiles } from "@/lib/frameUtils";
 import {
   normalizeSegmentPlan,
   sampleEvenly,
   selectFrameIndices,
   validateSegmentPlan,
   type SegmentInput,
-  type SegmentPlan,
 } from "@/lib/generationUtils";
 import { logger } from "@/lib/logger";
 import { getShutdownSignal } from "@/lib/shutdown";
 import { composeSpritesheet } from "@/lib/spritesheet";
 import { parseSize } from "@/lib/size";
+import { extractVideoFrames } from "@/lib/videoFrames";
 import {
   ensureDir,
   fileExists,
@@ -47,13 +56,12 @@ import {
   getVertexModelForVideo,
   getVideoAspectRatio,
   getVideoResolution,
-  getVideoModelSupportsContinuation,
 } from "@/lib/ai/soraConstraints";
 import {
   generateVertexVeoContinuation,
   getVertexVeoAvailability,
 } from "@/lib/ai/vertexVeo";
-import type { GenerationQueueItem, GeneratedFrame, Keyframe } from "@/types";
+import type { GenerationQueueItem, Keyframe } from "@/types";
 
 export const runtime = "nodejs";
 
@@ -78,6 +86,109 @@ async function resolveImageDimensions(filePath: string) {
     // ignore
   }
   return null;
+}
+
+function isAbsoluteUrl(url: string) {
+  return /^https?:\/\//i.test(url);
+}
+
+function joinUrl(base: string, pathPart: string) {
+  const trimmedBase = base.replace(/\/+$/, "");
+  const trimmedPath = pathPart.startsWith("/") ? pathPart : `/${pathPart}`;
+  return `${trimmedBase}${trimmedPath}`;
+}
+
+function storageUrlFromPath(filePath: string): string | null {
+  const root = storagePath();
+  const relative = path.relative(root, filePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+  const normalized = relative.split(path.sep).join("/");
+  return `/api/storage/${normalized}`;
+}
+
+async function resolvePikaframesImageUrl(options: {
+  animationId: string;
+  imageUrl: string;
+  assetBaseUrl?: string;
+}) {
+  const inputUrl = options.imageUrl.trim();
+  if (!inputUrl) {
+    throw new Error("Missing keyframe image URL.");
+  }
+  if (inputUrl.startsWith("data:") || isAbsoluteUrl(inputUrl)) {
+    return inputUrl;
+  }
+  if (options.assetBaseUrl) {
+    return joinUrl(options.assetBaseUrl, inputUrl);
+  }
+  const localPath = storagePathFromUrl(inputUrl);
+  if (!localPath || !(await fileExists(localPath))) {
+    logger.error("Pikaframes keyframe path missing", {
+      animationId: options.animationId,
+      imageUrl: inputUrl,
+    });
+    throw new Error("Invalid keyframe image path.");
+  }
+  return fileToDataUrl(localPath);
+}
+
+async function resolveFalImageUrlFromPath(options: {
+  animationId: string;
+  imagePath: string;
+  assetBaseUrl?: string;
+}) {
+  const assetBaseUrl = options.assetBaseUrl?.trim();
+  if (assetBaseUrl) {
+    const relativeUrl = storageUrlFromPath(options.imagePath);
+    if (relativeUrl) {
+      return joinUrl(assetBaseUrl, relativeUrl);
+    }
+    logger.warn("Fal asset base URL set but path is outside storage", {
+      animationId: options.animationId,
+      imagePath: options.imagePath,
+    });
+  }
+  return fileToDataUrl(options.imagePath);
+}
+
+async function resolveFalKeyframeImageUrl(options: {
+  animationId: string;
+  imageUrl: string;
+  generationSize: string;
+  bgKeyColor?: string;
+  kind: "start" | "end";
+  assetBaseUrl?: string;
+}) {
+  const trimmed = options.imageUrl.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.startsWith("data:") || isAbsoluteUrl(trimmed)) {
+    return trimmed;
+  }
+  const localPath = storagePathFromUrl(trimmed);
+  if (!localPath || !(await fileExists(localPath))) {
+    logger.warn("Fal keyframe image not found", {
+      animationId: options.animationId,
+      imageUrl: trimmed,
+      kind: options.kind,
+    });
+    return null;
+  }
+  const normalizedPath = await normalizeGenerationFrame({
+    animationId: options.animationId,
+    kind: options.kind,
+    sourcePath: localPath,
+    generationSize: options.generationSize,
+    bgKeyColor: options.bgKeyColor,
+  });
+  return resolveFalImageUrlFromPath({
+    animationId: options.animationId,
+    imagePath: normalizedPath,
+    assetBaseUrl: options.assetBaseUrl,
+  });
 }
 
 type InputClampTarget = {
@@ -205,35 +316,6 @@ async function buildKeyframeCanvas(options: {
   return composed.png().toBuffer();
 }
 
-
-async function extractVideoFrames(options: {
-  videoPath: string;
-  outputDir: string;
-  fps: number;
-  roi: { x: number; y: number; w: number; h: number };
-  frameWidth: number;
-  frameHeight: number;
-}) {
-  await fs.rm(options.outputDir, { recursive: true, force: true });
-  await fs.mkdir(options.outputDir, { recursive: true });
-  const filters = [
-    `crop=${options.roi.w}:${options.roi.h}:${options.roi.x}:${options.roi.y}`,
-    `scale=${options.frameWidth}:${options.frameHeight}:flags=neighbor`,
-    `fps=${options.fps}`,
-  ];
-  const args = [
-    "-hide_banner",
-    "-y",
-    "-i",
-    options.videoPath,
-    "-vf",
-    filters.join(","),
-    "-start_number",
-    "0",
-    path.join(options.outputDir, "frame_%03d.png"),
-  ];
-  await runFfmpeg(args);
-}
 
 async function normalizeVeoContinuationVideo(options: {
   inputPath: string;
@@ -440,35 +522,182 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
 
     const model = String(animation.generationModel ?? "sora-2");
     const modelConfig = getVideoModelConfig(model);
-    const supportsContinuation = getVideoModelSupportsContinuation(model);
+    const isPikaframes = modelConfig.id === "pikaframes";
+    const isWan = modelConfig.id === "wan2.2";
     const vertexModelId = getVertexModelForVideo(model);
     const supportsNegativePrompt = Boolean(modelConfig.supportsNegativePrompt);
+    const supportsSeed = Boolean(modelConfig.supportsSeed);
+    const supportsReferenceImages = Boolean(modelConfig.supportsReferenceImages);
+    const referenceImageLimit = modelConfig.referenceImageLimit ?? 0;
+    const referenceConstraints = modelConfig.referenceImageConstraints;
+    const supportsConcepts = Boolean(modelConfig.supportsConcepts);
+    const supportsEffect = Boolean(modelConfig.supportsEffect);
+    const supportsAudio = Boolean(modelConfig.replicateSupportsAudio);
     const generationNegativePrompt =
       typeof animation.generationNegativePrompt === "string"
         ? animation.generationNegativePrompt.trim()
         : "";
-    const requestedProvider = String(animation.generationProvider ?? "").trim();
-    if (requestedProvider !== "openai" && requestedProvider !== "replicate") {
-      throw new Error("Generation provider is required. Select OpenAI or Replicate.");
+    const generationSeed =
+      typeof animation.generationSeed === "number" &&
+      Number.isFinite(animation.generationSeed)
+        ? animation.generationSeed
+        : null;
+    const generationReferenceImageUrls = Array.isArray(
+      animation.generationReferenceImageUrls
+    )
+      ? animation.generationReferenceImageUrls.filter(
+          (url): url is string => typeof url === "string" && url.trim().length > 0
+        )
+      : [];
+    const generationConcepts = Array.isArray(animation.generationConcepts)
+      ? animation.generationConcepts.filter(
+          (concept): concept is string =>
+            typeof concept === "string" && concept.trim().length > 0
+        )
+      : [];
+    const generationEffect =
+      typeof animation.generationEffect === "string"
+        ? animation.generationEffect.trim()
+        : "";
+    const hasReferenceImages =
+      supportsReferenceImages && generationReferenceImageUrls.length > 0;
+    const effectActive = supportsEffect && generationEffect.length > 0;
+    const seedValue = supportsSeed && typeof generationSeed === "number"
+      ? generationSeed
+      : null;
+    const conceptValues = supportsConcepts ? generationConcepts : [];
+    const wanSeed =
+      typeof animation.wanSeed === "number" && Number.isFinite(animation.wanSeed)
+        ? animation.wanSeed
+        : null;
+    const wanNumInferenceSteps =
+      typeof animation.wanNumInferenceSteps === "number" &&
+      Number.isFinite(animation.wanNumInferenceSteps)
+        ? animation.wanNumInferenceSteps
+        : null;
+    const wanEnableSafetyChecker =
+      typeof animation.wanEnableSafetyChecker === "boolean"
+        ? animation.wanEnableSafetyChecker
+        : undefined;
+    const wanEnableOutputSafetyChecker =
+      typeof animation.wanEnableOutputSafetyChecker === "boolean"
+        ? animation.wanEnableOutputSafetyChecker
+        : undefined;
+    const wanEnablePromptExpansion =
+      typeof animation.wanEnablePromptExpansion === "boolean"
+        ? animation.wanEnablePromptExpansion
+        : undefined;
+    const wanAcceleration =
+      animation.wanAcceleration === "none" || animation.wanAcceleration === "regular"
+        ? animation.wanAcceleration
+        : undefined;
+    const wanGuidanceScale =
+      typeof animation.wanGuidanceScale === "number" &&
+      Number.isFinite(animation.wanGuidanceScale)
+        ? animation.wanGuidanceScale
+        : null;
+    const wanGuidanceScale2 =
+      typeof animation.wanGuidanceScale2 === "number" &&
+      Number.isFinite(animation.wanGuidanceScale2)
+        ? animation.wanGuidanceScale2
+        : null;
+    const wanShift =
+      typeof animation.wanShift === "number" && Number.isFinite(animation.wanShift)
+        ? animation.wanShift
+        : null;
+    const wanInterpolatorModel =
+      animation.wanInterpolatorModel === "none" ||
+      animation.wanInterpolatorModel === "film" ||
+      animation.wanInterpolatorModel === "rife"
+        ? animation.wanInterpolatorModel
+        : undefined;
+    const wanNumInterpolatedFrames =
+      typeof animation.wanNumInterpolatedFrames === "number" &&
+      Number.isFinite(animation.wanNumInterpolatedFrames)
+        ? animation.wanNumInterpolatedFrames
+        : null;
+    const wanAdjustFpsForInterpolation =
+      typeof animation.wanAdjustFpsForInterpolation === "boolean"
+        ? animation.wanAdjustFpsForInterpolation
+        : undefined;
+    const wanVideoQuality =
+      animation.wanVideoQuality === "low" ||
+      animation.wanVideoQuality === "medium" ||
+      animation.wanVideoQuality === "high" ||
+      animation.wanVideoQuality === "maximum"
+        ? animation.wanVideoQuality
+        : undefined;
+    const wanVideoWriteMode =
+      animation.wanVideoWriteMode === "fast" ||
+      animation.wanVideoWriteMode === "balanced" ||
+      animation.wanVideoWriteMode === "small"
+        ? animation.wanVideoWriteMode
+        : undefined;
+    if (generationReferenceImageUrls.length > 0 && !supportsReferenceImages) {
+      throw new Error(`${modelConfig.label} does not support reference images.`);
     }
-    const modelProvider = modelConfig.provider;
-    if (requestedProvider !== modelProvider) {
+    if (
+      hasReferenceImages &&
+      referenceImageLimit > 0 &&
+      generationReferenceImageUrls.length > referenceImageLimit
+    ) {
       throw new Error(
-        `Generation provider (${requestedProvider}) does not match model provider (${modelProvider}).`
+        `${modelConfig.label} supports up to ${referenceImageLimit} reference images.`
       );
     }
-    const provider: "openai" | "replicate" = requestedProvider;
+    const requestedProvider = String(animation.generationProvider ?? "").trim();
+    const provider =
+      requestedProvider === "openai" ||
+      requestedProvider === "replicate" ||
+      requestedProvider === "fal" ||
+      requestedProvider === "vertex"
+        ? requestedProvider
+        : null;
+    if (!provider) {
+      throw new Error(
+        "Generation provider is required. Select OpenAI, Replicate, Fal, or Vertex AI."
+      );
+    }
+    const modelProvider = modelConfig.provider;
+    if (provider !== modelProvider) {
+      throw new Error(
+        `Generation provider (${provider}) does not match model provider (${modelProvider}).`
+      );
+    }
     const requestedSize = String(
       animation.generationSize ?? getDefaultVideoSize(model)
     );
-    const size = coerceVideoSizeForModel(requestedSize, model);
+    let size = coerceVideoSizeForModel(requestedSize, model);
     const useSegmentPlan = Array.isArray(segments) && segments.length > 0;
     const requestedSeconds = Number(
       animation.generationSeconds ?? getDefaultVideoSeconds(model)
     );
-    const seconds = useSegmentPlan
+    let seconds = useSegmentPlan
       ? requestedSeconds
       : coerceVideoSecondsForModel(requestedSeconds, model);
+    if (hasReferenceImages && referenceConstraints) {
+      if (
+        Number.isFinite(referenceConstraints.seconds) &&
+        seconds !== referenceConstraints.seconds
+      ) {
+        seconds = referenceConstraints.seconds;
+      }
+      if (
+        referenceConstraints.aspectRatio &&
+        getVideoAspectRatio(size) !== referenceConstraints.aspectRatio
+      ) {
+        const fallback = modelConfig.sizeOptions.find(
+          (option) =>
+            getVideoAspectRatio(option) === referenceConstraints.aspectRatio
+        );
+        if (!fallback) {
+          throw new Error(
+            `${modelConfig.label} reference images require ${referenceConstraints.aspectRatio} aspect ratio.`
+          );
+        }
+        size = fallback;
+      }
+    }
     const requestedFps = Number(animation.extractFps ?? animation.fps ?? 12);
     const extractFps = [6, 8, 12, 24].includes(requestedFps) ? requestedFps : 12;
     const loopMode =
@@ -588,21 +817,29 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
           }))
         )
       : null;
-    const continuationRequested =
-      Boolean(segmentPlan && segmentPlan.length > 1) &&
-      supportsContinuation &&
-      Boolean(vertexModelId) &&
-      process.env.VEO_CONTINUATION_ENABLED === "true";
+    if (segmentPlan && hasReferenceImages) {
+      throw new Error(
+        `${modelConfig.label} reference images are not supported with segmented generation.`
+      );
+    }
 
     const replicateModel = getReplicateModelForVideo(model);
     const useOpenAI = provider === "openai";
     const useReplicateVideo = provider === "replicate" && Boolean(replicateModel);
+    const useFal = provider === "fal" && (isPikaframes || isWan);
+    const useVertex = provider === "vertex";
 
-    if (!useOpenAI && !useReplicateVideo) {
+    if (!useOpenAI && !useReplicateVideo && !useFal && !useVertex) {
       throw new Error(`Model ${model} is not available for provider ${provider}.`);
     }
+    if (useVertex && !vertexModelId) {
+      throw new Error(`Model ${model} is not configured for Vertex AI.`);
+    }
+    if (useVertex && segmentPlan && segmentPlan.length > 0) {
+      throw new Error("Vertex continuation does not support segmented generation.");
+    }
 
-    if (segmentPlan) {
+    if (segmentPlan && !isPikaframes && !isWan) {
       const validationError = validateSegmentPlan({
         segments: segmentPlan,
         totalFrameCount,
@@ -616,7 +853,10 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
       }
     }
 
-    if (useOpenAI || useReplicateVideo) {
+    let continuationVideoPath: string | null = null;
+    let vertexConfig: ReturnType<typeof getVertexVeoAvailability>["config"];
+
+    if (useOpenAI || useReplicateVideo || useFal || useVertex) {
       if (!referencePath) {
         throw new Error("Reference image not found.");
       }
@@ -626,53 +866,64 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
       if (useReplicateVideo && !process.env.REPLICATE_API_TOKEN?.trim()) {
         throw new Error("Missing REPLICATE_API_TOKEN. Add it to .env.local and restart the dev server.");
       }
+      if (useFal && !process.env.FAL_KEY?.trim()) {
+        throw new Error("Missing FAL_KEY. Add it to .env.local and restart the dev server.");
+      }
+      if (useVertex) {
+        const availability = getVertexVeoAvailability();
+        if (!availability.available || !availability.config) {
+          throw new Error(
+            availability.reason ?? "Vertex configuration missing."
+          );
+        }
+        vertexConfig = availability.config;
+        if (animation.generationContinuationEnabled !== true) {
+          throw new Error(
+            "Vertex continuation is disabled. Enable it in Animation Settings."
+          );
+        }
+        const continuationVideoUrl =
+          typeof animation.generationContinuationVideoUrl === "string"
+            ? animation.generationContinuationVideoUrl.trim()
+            : "";
+        if (!continuationVideoUrl) {
+          throw new Error("Vertex continuation requires an input video.");
+        }
+        const resolvedPath = storagePathFromUrl(continuationVideoUrl);
+        if (!resolvedPath) {
+          throw new Error("Invalid continuation video path.");
+        }
+        if (!(await fileExists(resolvedPath))) {
+          throw new Error("Continuation video not found.");
+        }
+        continuationVideoPath = resolvedPath;
+      }
 
       const isToonCrafter = modelConfig.id === "tooncrafter";
+      const keyframes = (animation.keyframes as Keyframe[] | undefined) ?? [];
       let selectedKeyframes: Keyframe[] = [];
       let keyframePaths: string[] = [];
       let effectiveSize = size;
+      let pikaframesPlan: ReturnType<typeof buildPikaframesPlan> | null = null;
+      const pikaframesImageUrls: string[] = [];
+      let pikaframesTransitions: PikaframesTransitionInput[] = [];
 
       const appendGenerationNote = async (note: string) => {
         generationNote = generationNote ? `${generationNote} ${note}` : note;
         await updateAnimation({ generationNote });
       };
 
-      const continuationAvailability = continuationRequested
-        ? getVertexVeoAvailability()
-        : { available: false, config: undefined, reason: "Veo continuation disabled." };
-      const continuationEnabled =
-        continuationRequested &&
-        continuationAvailability.available &&
-        Boolean(continuationAvailability.config) &&
-        Boolean(vertexModelId);
-      if (continuationRequested) {
-        if (continuationEnabled) {
-          await appendGenerationNote(
-            "Veo continuation enabled for segmented generation. End frames are ignored after the first segment."
-          );
-          logger.info("Veo continuation enabled", {
-            animationId,
-            model,
-            provider,
-          });
-        } else {
-          const reason = continuationAvailability.reason ?? "Vertex configuration missing.";
-          await appendGenerationNote(`Veo continuation disabled: ${reason}`);
-          logger.warn("Veo continuation disabled", {
-            animationId,
-            model,
-            provider,
-            reason,
-          });
-        }
-      }
-
       if (segmentPlan && isToonCrafter) {
         throw new Error("Segmented generation is not supported for ToonCrafter.");
       }
+      if (segmentPlan && isPikaframes) {
+        throw new Error("Pikaframes does not support segmented generation.");
+      }
+      if (segmentPlan && isWan) {
+        throw new Error("Wan 2.2 does not support segmented generation.");
+      }
 
       if (isToonCrafter && !segmentPlan) {
-        const keyframes = (animation.keyframes as Keyframe[] | undefined) ?? [];
         const usableKeyframes = keyframes
           .filter((kf) => kf.image)
           .sort((a, b) => a.frameIndex - b.frameIndex);
@@ -750,12 +1001,81 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
         }
       }
 
+      if (isPikaframes) {
+        const fpsValue = Number(animation.extractFps ?? animation.fps ?? 12);
+        const plan = buildPikaframesPlan({ keyframes, fps: fpsValue });
+        if (plan.errors.length > 0) {
+          logger.error("Pikaframes plan invalid", {
+            animationId,
+            errors: plan.errors,
+          });
+          throw new Error(plan.errors[0]);
+        }
+        if (plan.warnings.length > 0) {
+          logger.warn("Pikaframes plan warnings", {
+            animationId,
+            warnings: plan.warnings,
+          });
+          await appendGenerationNote(plan.warnings.join(" "));
+        }
+        pikaframesPlan = plan;
+
+        const assetBaseUrl = process.env.FAL_ASSET_BASE_URL?.trim();
+        let dataUrlCount = 0;
+        for (const frame of plan.keyframes) {
+          const imageUrl = String(frame.image ?? "");
+          const resolvedUrl = await resolvePikaframesImageUrl({
+            animationId,
+            imageUrl,
+            assetBaseUrl,
+          });
+          if (resolvedUrl.startsWith("data:")) {
+            dataUrlCount += 1;
+          }
+          pikaframesImageUrls.push(resolvedUrl);
+        }
+        pikaframesTransitions = plan.transitions.map((transition) => ({
+          duration: transition.durationSeconds,
+        }));
+        logger.info("Pikaframes inputs prepared", {
+          animationId,
+          keyframes: plan.keyframes.length,
+          totalDuration: plan.totalDuration,
+          dataUrlCount,
+          assetBaseUrl: Boolean(assetBaseUrl),
+        });
+      }
+
       const { workingPath, workingSpec } = await ensureWorkingReference({
         character,
         referencePath,
         referenceImageId: String(primary?.id ?? "default"),
         generationSize: effectiveSize,
       });
+
+      const referenceImageInputs: string[] = [];
+      if (hasReferenceImages) {
+        for (const url of generationReferenceImageUrls) {
+          const trimmed = url.trim();
+          if (!trimmed) continue;
+          if (trimmed.startsWith("data:") || isAbsoluteUrl(trimmed)) {
+            referenceImageInputs.push(trimmed);
+            continue;
+          }
+          const localPath = storagePathFromUrl(trimmed);
+          if (localPath && (await fileExists(localPath))) {
+            referenceImageInputs.push(await fileToDataUrl(localPath));
+          } else {
+            logger.warn("Reference image missing", {
+              animationId,
+              url: trimmed,
+            });
+          }
+        }
+        if (referenceImageInputs.length === 0) {
+          throw new Error("Reference images could not be resolved.");
+        }
+      }
 
       const resolvedPromptProfile =
         String(animation.promptProfile ?? "") === "concise" ||
@@ -826,9 +1146,7 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
         const rawFramesDir = path.join(generatedDir, "frames_raw");
         const framesDir = path.join(generatedDir, "frames");
         await fs.rm(rawFramesDir, { recursive: true, force: true });
-        await fs.rm(framesDir, { recursive: true, force: true });
         await fs.mkdir(rawFramesDir, { recursive: true });
-        await fs.mkdir(framesDir, { recursive: true });
 
         const referenceUrl = String(primary?.url ?? "");
         const loopRequested =
@@ -846,10 +1164,7 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
           provider,
         });
         let loggedNegativePrompt = false;
-        let previousSegmentVideoPath: string | null = null;
-        const continuationFrameLimit = Math.round(
-          VEO_CONTINUATION_SECONDS * extractFps
-        );
+        let loggedEndFrameIgnored = false;
 
         for (let index = 0; index < segmentPlan.length; index += 1) {
           const segment = segmentPlan[index];
@@ -893,78 +1208,16 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
             let providerThumbUrl: string | undefined;
             const aspectRatio = getVideoAspectRatio(size);
             const resolution = getVideoResolution(size);
-            const continuationCandidate =
-              continuationEnabled &&
-              index > 0 &&
-              segment.targetFrameCount <= continuationFrameLimit;
-            if (
-              continuationEnabled &&
-              index > 0 &&
-              segment.targetFrameCount > continuationFrameLimit
-            ) {
-              logger.warn("Veo continuation skipped (segment too long)", {
+            if (useOpenAI) {
+              const result = await runOpenAIGeneration({
                 animationId,
-                segmentId: segment.id,
-                targetFrameCount: segment.targetFrameCount,
-                continuationFrameLimit,
-              });
-            }
-
-            if (continuationCandidate) {
-              if (!previousSegmentVideoPath) {
-                throw new Error(
-                  "Veo continuation requires a previous segment video."
-                );
-              }
-              if (!vertexModelId || !continuationAvailability.config) {
-                throw new Error(
-                  "Veo continuation is enabled but Vertex configuration is missing."
-                );
-              }
-              const normalizedPath = await normalizeVeoContinuationVideo({
-                inputPath: previousSegmentVideoPath,
-                outputDir: generatedDir,
-                aspectRatio,
-                resolution,
-              });
-              try {
-                const continuationBuffer = await generateVertexVeoContinuation({
-                  model: vertexModelId,
-                  prompt,
-                  aspectRatio,
-                  resolution,
-                  durationSeconds: VEO_CONTINUATION_SECONDS,
-                  negativePrompt: supportsNegativePrompt
-                    ? generationNegativePrompt
-                    : undefined,
-                  inputVideoPath: normalizedPath,
-                  gcsPrefix: `veo-continuation/${animationId}/segments/${segment.id}`,
-                  config: continuationAvailability.config,
-                });
-                await fs.writeFile(videoPath, continuationBuffer);
-                logger.info("Veo continuation segment generated", {
-                  animationId,
-                  segmentId: segment.id,
-                  model: vertexModelId,
-                });
-              } finally {
-                await fs.rm(normalizedPath, { force: true });
-              }
-            } else if (useOpenAI) {
-              const job = await createVideoJob({
                 prompt,
                 model,
                 seconds: segment.durationSeconds,
                 size,
                 inputReferencePath: startImagePath,
-              });
-              const initialProgress = normalizeProgress(job.progress);
-              if (initialProgress !== null) {
-                await updateQueueItem(segment.id, { progress: initialProgress });
-              }
-
-              const finalJob = await pollVideoJob({
-                videoId: job.id,
+                generatedDir,
+                outputFilename: videoFilename,
                 onUpdate: async (update) => {
                   const progress = normalizeProgress(update.progress);
                   if (progress !== null) {
@@ -972,42 +1225,14 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
                   }
                 },
               });
-
-              const videoBuffer = await downloadVideoContent({ videoId: job.id });
-              await fs.writeFile(videoPath, videoBuffer);
-
-              try {
-                const spriteBuffer = await downloadVideoContent({
-                  videoId: job.id,
-                  variant: "spritesheet",
-                });
-                const spriteName = `provider_spritesheet_${Date.now()}.png`;
-                const spritePath = path.join(generatedDir, spriteName);
-                await fs.writeFile(spritePath, spriteBuffer);
-                providerSpritesheetUrl = `/api/storage/animations/${animationId}/generated/${spriteName}`;
-              } catch {
-                // optional
-              }
-
-              try {
-                const thumbBuffer = await downloadVideoContent({
-                  videoId: job.id,
-                  variant: "thumbnail",
-                });
-                const thumbName = `thumbnail_${Date.now()}.png`;
-                const thumbPath = path.join(generatedDir, thumbName);
-                await fs.writeFile(thumbPath, thumbBuffer);
-                providerThumbUrl = `/api/storage/animations/${animationId}/generated/${thumbName}`;
-              } catch {
-                // optional
-              }
+              providerSpritesheetUrl = result.spritesheetUrl;
+              providerThumbUrl = result.thumbnailUrl;
             } else if (useReplicateVideo && replicateModel) {
               const supportsStartEnd = Boolean(modelConfig.supportsStartEnd);
               const supportsLoop = Boolean(modelConfig.supportsLoop);
               const startImageKey = modelConfig.startImageKey;
               const endImageKey = modelConfig.endImageKey;
               const resolutionKey = modelConfig.replicateResolutionKey;
-              const supportsAudio = Boolean(modelConfig.replicateSupportsAudio);
               let effectiveEndImagePath: string | null = null;
               if (supportsStartEnd && (!loopRequested || !supportsLoop)) {
                 if (loopRequested && !supportsLoop) {
@@ -1015,6 +1240,17 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
                 } else if (endImagePath) {
                   effectiveEndImagePath = endImagePath;
                 }
+              }
+              if ((hasReferenceImages || effectActive) && effectiveEndImagePath) {
+                if (!loggedEndFrameIgnored) {
+                  logger.warn("End frame ignored for segmented generation", {
+                    animationId,
+                    model,
+                    reason: hasReferenceImages ? "reference_images" : "effect",
+                  });
+                  loggedEndFrameIgnored = true;
+                }
+                effectiveEndImagePath = null;
               }
 
               const input: Record<string, unknown> = {
@@ -1033,6 +1269,19 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
                   });
                   loggedNegativePrompt = true;
                 }
+              }
+
+              if (supportsSeed && typeof seedValue === "number") {
+                input.seed = seedValue;
+              }
+              if (supportsConcepts && conceptValues.length > 0) {
+                input.concepts = conceptValues;
+              }
+              if (supportsEffect && effectActive) {
+                input.effect = generationEffect;
+              }
+              if (hasReferenceImages) {
+                input.reference_images = referenceImageInputs;
               }
 
               if (resolutionKey === "quality") {
@@ -1104,8 +1353,6 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
               throw new Error(`Model ${model} is not available for provider ${provider}.`);
             }
 
-            previousSegmentVideoPath = videoPath;
-
             await updateQueueItem(segment.id, {
               status: "completed",
               progress: 100,
@@ -1124,6 +1371,7 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
               roi: workingSpec.roi,
               frameWidth,
               frameHeight,
+              mode: "crop",
             });
 
             const rawFiles = sortFrameFiles(await fs.readdir(tempDir));
@@ -1156,7 +1404,7 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
               if (outputIndex > segment.endFrame) {
                 throw new Error("Segment frame overflow.");
               }
-              const outputName = `frame_${String(outputIndex).padStart(3, "0")}.png`;
+              const outputName = formatFrameFilename(outputIndex);
               const outputPath = path.join(rawFramesDir, outputName);
               await fs.copyFile(path.join(tempDir, rawName), outputPath);
             }
@@ -1194,27 +1442,14 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
           generationNote = generationNote ? `${generationNote} ${note}` : note;
         }
 
-        const baseSequence = rawFiles;
-        const sequence =
-          effectiveLoopMode === "pingpong"
-            ? baseSequence.concat(baseSequence.slice(1, -1).reverse())
-            : baseSequence;
-
-        const generatedFrames: GeneratedFrame[] = [];
-        for (let index = 0; index < sequence.length; index += 1) {
-          const inputName = sequence[index];
-          const inputPath = path.join(rawFramesDir, inputName);
-          const outputName = `frame_${String(index).padStart(3, "0")}.png`;
-          const outputPath = path.join(framesDir, outputName);
-          await fs.copyFile(inputPath, outputPath);
-          generatedFrames.push({
-            frameIndex: index,
-            url: `/api/storage/animations/${animationId}/generated/frames/${outputName}`,
-            isKeyframe: false,
-            generatedAt: new Date().toISOString(),
-            source: model,
-          });
-        }
+        const generatedFrames = await buildGeneratedFramesFromSequence({
+          animationId,
+          rawFramesDir,
+          outputDir: framesDir,
+          baseSequence: rawFiles,
+          loopMode: effectiveLoopMode,
+          source: model,
+        });
 
         const layout = buildSpritesheetLayout({
           frameWidth,
@@ -1258,74 +1493,372 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
         return versioned;
       }
 
-      const videoFilename = `video_${Date.now()}.mp4`;
-      const videoPath = path.join(generatedDir, videoFilename);
+      let videoFilename = `video_${Date.now()}.mp4`;
+      let videoPath = path.join(generatedDir, videoFilename);
 
       if (useOpenAI) {
-        const job = await createVideoJob({
+        const result = await runOpenAIGeneration({
+          animationId,
           prompt,
           model,
           seconds,
           size,
           inputReferencePath: workingPath,
-        });
-
-        await updateGenerationJob({
-          provider: "openai",
-          providerJobId: job.id,
-          status: job.status,
-          progress: typeof job.progress === "number" ? job.progress : 0,
-          expiresAt: job.expires_at ? new Date(job.expires_at * 1000).toISOString() : undefined,
-        });
-
-        const finalJob = await pollVideoJob({
-          videoId: job.id,
+          generatedDir,
+          outputFilename: videoFilename,
           onUpdate: async (update) => {
-            const patch: Record<string, unknown> = {
-              status: update.status,
-            };
-            if (typeof update.progress === "number") {
-              patch.progress = update.progress;
-            }
-            if (update.expires_at) {
-              patch.expiresAt = new Date(update.expires_at * 1000).toISOString();
-            }
-            await updateGenerationJob(patch);
+            await updateGenerationJob({
+              provider: "openai",
+              ...update,
+            });
           },
         });
+        expiresAt = result.expiresAt;
+        providerSpritesheetUrl = result.spritesheetUrl;
+        providerThumbUrl = result.thumbnailUrl;
+        videoPath = result.videoPath;
+        videoFilename = path.basename(result.videoPath);
+      } else if (useFal) {
+        if (isPikaframes) {
+          if (!pikaframesPlan || pikaframesImageUrls.length < 2) {
+            throw new Error("Pikaframes requires at least two keyframes with images.");
+          }
 
-        expiresAt = finalJob.expires_at
-          ? new Date(finalJob.expires_at * 1000).toISOString()
-          : undefined;
-
-        const videoBuffer = await downloadVideoContent({ videoId: job.id });
-        await fs.writeFile(videoPath, videoBuffer);
-
-        try {
-          const spriteBuffer = await downloadVideoContent({
-            videoId: job.id,
-            variant: "spritesheet",
+          await updateGenerationJob({
+            provider: "fal",
+            providerJobId: "pikaframes",
+            status: "in_progress",
+            progress: 0,
           });
-          const spriteName = `provider_spritesheet_${Date.now()}.png`;
-          const spritePath = path.join(generatedDir, spriteName);
-          await fs.writeFile(spritePath, spriteBuffer);
-          providerSpritesheetUrl = `/api/storage/animations/${animationId}/generated/${spriteName}`;
-        } catch {
-          // optional
+
+          const resolution = getVideoResolution(size);
+          const pikaframesPayload = {
+            image_urls: pikaframesImageUrls,
+            transitions:
+              pikaframesTransitions.length > 0 ? pikaframesTransitions : undefined,
+            prompt: prompt ? prompt : undefined,
+            negative_prompt:
+              supportsNegativePrompt && generationNegativePrompt
+                ? generationNegativePrompt
+                : undefined,
+            seed: supportsSeed && typeof seedValue === "number" ? seedValue : undefined,
+            resolution,
+          };
+
+          const falResponse = await runPikaframes(pikaframesPayload);
+          const outputUrl = falResponse.video?.url;
+          if (!outputUrl) {
+            throw new Error("No video returned from Pikaframes.");
+          }
+
+          const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
+          if (!outputResponse.ok) {
+            throw new Error("Failed to download generated video.");
+          }
+          const outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
+          await fs.writeFile(videoPath, outputBuffer);
+        } else if (isWan) {
+          await updateGenerationJob({
+            provider: "fal",
+            providerJobId: "wan2.2",
+            status: "in_progress",
+            progress: 0,
+          });
+
+          const keyframesWithImages = keyframes
+            .filter((kf) => typeof kf.image === "string" && kf.image.trim().length > 0)
+            .sort((a, b) => a.frameIndex - b.frameIndex);
+          const lastFrameIndex = Math.max(0, totalFrameCount - 1);
+          const startKeyframe = keyframesWithImages.find(
+            (kf) => kf.frameIndex === 0
+          );
+          const endKeyframe = keyframesWithImages.find(
+            (kf) => kf.frameIndex === lastFrameIndex
+          );
+          const loopRequested = animation.generationLoop === true;
+
+          const customStartPath = await resolveLocalImagePath(
+            typeof animation.generationStartImageUrl === "string"
+              ? animation.generationStartImageUrl
+              : undefined
+          );
+          const customEndPath = await resolveLocalImagePath(
+            typeof animation.generationEndImageUrl === "string"
+              ? animation.generationEndImageUrl
+              : undefined
+          );
+          const assetBaseUrl = process.env.FAL_ASSET_BASE_URL?.trim();
+          let startImageUrl = "";
+          if (customStartPath) {
+            const normalizedPath = await normalizeGenerationFrame({
+              animationId,
+              kind: "start",
+              sourcePath: customStartPath,
+              generationSize: size,
+              bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+            });
+            startImageUrl = await resolveFalImageUrlFromPath({
+              animationId,
+              imagePath: normalizedPath,
+              assetBaseUrl,
+            });
+            logger.info("Wan start image override applied", { animationId });
+          }
+          if (!startImageUrl && startKeyframe?.image) {
+            const resolved = await resolveFalKeyframeImageUrl({
+              animationId,
+              imageUrl: startKeyframe.image,
+              generationSize: size,
+              bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+              kind: "start",
+              assetBaseUrl,
+            });
+            if (resolved) {
+              startImageUrl = resolved;
+              logger.info("Wan start image sourced from keyframe", {
+                animationId,
+                frameIndex: startKeyframe.frameIndex,
+              });
+            }
+          }
+          if (!startImageUrl) {
+            startImageUrl = await resolveFalImageUrlFromPath({
+              animationId,
+              imagePath: workingPath,
+              assetBaseUrl,
+            });
+          }
+
+          let endImageUrl: string | undefined;
+          if (loopRequested) {
+            endImageUrl = startImageUrl;
+          } else if (customEndPath) {
+            const normalizedPath = await normalizeGenerationFrame({
+              animationId,
+              kind: "end",
+              sourcePath: customEndPath,
+              generationSize: size,
+              bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+            });
+            endImageUrl = await resolveFalImageUrlFromPath({
+              animationId,
+              imagePath: normalizedPath,
+              assetBaseUrl,
+            });
+            logger.info("Wan end image override applied", { animationId });
+          } else if (endKeyframe?.image) {
+            const resolved = await resolveFalKeyframeImageUrl({
+              animationId,
+              imageUrl: endKeyframe.image,
+              generationSize: size,
+              bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+              kind: "end",
+              assetBaseUrl,
+            });
+            if (resolved) {
+              endImageUrl = resolved;
+              logger.info("Wan end image sourced from keyframe", {
+                animationId,
+                frameIndex: endKeyframe.frameIndex,
+              });
+            }
+          }
+
+          const desiredFrames = Math.round(seconds * extractFps);
+          const frameClamp = clampWanFrames(desiredFrames);
+          if (frameClamp.clamped) {
+            await appendGenerationNote(
+              `Wan 2.2 frame count clamped to ${frameClamp.frames} (requested ${desiredFrames}).`
+            );
+            logger.warn("Wan 2.2 frame count clamped", {
+              animationId,
+              requested: desiredFrames,
+              clamped: frameClamp.frames,
+            });
+          }
+
+          const resolution = getWanResolution(size);
+          const aspectRatio = getWanAspectRatio(size);
+          const framesPerSecond = Math.min(60, Math.max(4, Math.round(extractFps)));
+
+          const clampWanValue = (
+            value: number,
+            min: number,
+            max: number,
+            field: string
+          ) => {
+            const clamped = Math.min(max, Math.max(min, value));
+            if (clamped !== value) {
+              logger.warn("Wan 2.2 value clamped", {
+                animationId,
+                field,
+                requested: value,
+                clamped,
+              });
+            }
+            return clamped;
+          };
+
+          const wanPayload: WanRequest = {
+            image_url: startImageUrl,
+            prompt,
+            num_frames: frameClamp.frames,
+            frames_per_second: framesPerSecond,
+            resolution,
+            aspect_ratio: aspectRatio,
+          };
+          if (endImageUrl) {
+            wanPayload.end_image_url = endImageUrl;
+          }
+          if (supportsNegativePrompt && generationNegativePrompt) {
+            wanPayload.negative_prompt = generationNegativePrompt;
+          }
+          if (typeof wanSeed === "number") {
+            wanPayload.seed = wanSeed;
+          }
+          if (typeof wanNumInferenceSteps === "number") {
+            wanPayload.num_inference_steps = clampWanValue(
+              Math.round(wanNumInferenceSteps),
+              2,
+              40,
+              "num_inference_steps"
+            );
+          }
+          if (typeof wanEnableSafetyChecker === "boolean") {
+            wanPayload.enable_safety_checker = wanEnableSafetyChecker;
+          }
+          if (typeof wanEnableOutputSafetyChecker === "boolean") {
+            wanPayload.enable_output_safety_checker = wanEnableOutputSafetyChecker;
+          }
+          if (typeof wanEnablePromptExpansion === "boolean") {
+            wanPayload.enable_prompt_expansion = wanEnablePromptExpansion;
+          }
+          if (wanAcceleration) {
+            wanPayload.acceleration = wanAcceleration;
+          }
+          if (typeof wanGuidanceScale === "number") {
+            wanPayload.guidance_scale = clampWanValue(
+              wanGuidanceScale,
+              1,
+              10,
+              "guidance_scale"
+            );
+          }
+          if (typeof wanGuidanceScale2 === "number") {
+            wanPayload.guidance_scale_2 = clampWanValue(
+              wanGuidanceScale2,
+              1,
+              10,
+              "guidance_scale_2"
+            );
+          }
+          if (typeof wanShift === "number") {
+            wanPayload.shift = clampWanValue(wanShift, 1, 10, "shift");
+          }
+          if (wanInterpolatorModel) {
+            wanPayload.interpolator_model = wanInterpolatorModel;
+          }
+          if (typeof wanNumInterpolatedFrames === "number") {
+            wanPayload.num_interpolated_frames = clampWanValue(
+              Math.round(wanNumInterpolatedFrames),
+              0,
+              4,
+              "num_interpolated_frames"
+            );
+          }
+          if (typeof wanAdjustFpsForInterpolation === "boolean") {
+            wanPayload.adjust_fps_for_interpolation = wanAdjustFpsForInterpolation;
+          }
+          if (wanVideoQuality) {
+            wanPayload.video_quality = wanVideoQuality;
+          }
+          if (wanVideoWriteMode) {
+            wanPayload.video_write_mode = wanVideoWriteMode;
+          }
+
+          logger.info("Wan 2.2 request prepared", {
+            animationId,
+            frames: frameClamp.frames,
+            framesPerSecond,
+            resolution,
+            aspectRatio,
+            loopRequested,
+            hasEndImage: Boolean(endImageUrl),
+          });
+
+          const falResponse = await runWanVideo(wanPayload);
+          const outputUrl = falResponse.video?.url;
+          if (!outputUrl) {
+            throw new Error("No video returned from Wan 2.2.");
+          }
+
+          const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
+          if (!outputResponse.ok) {
+            throw new Error("Failed to download generated video.");
+          }
+          const outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
+          await fs.writeFile(videoPath, outputBuffer);
+        } else {
+          throw new Error("Unsupported Fal model selection.");
         }
 
-        try {
-          const thumbBuffer = await downloadVideoContent({
-            videoId: job.id,
-            variant: "thumbnail",
-          });
-          const thumbName = `thumbnail_${Date.now()}.png`;
-          const thumbPath = path.join(generatedDir, thumbName);
-          await fs.writeFile(thumbPath, thumbBuffer);
-          providerThumbUrl = `/api/storage/animations/${animationId}/generated/${thumbName}`;
-        } catch {
-          // optional
+        await updateGenerationJob({
+          status: "completed",
+          progress: 100,
+          outputs: {
+            videoUrl: `/api/storage/animations/${animationId}/generated/${videoFilename}`,
+          },
+        });
+      } else if (useVertex) {
+        if (!vertexModelId || !vertexConfig || !continuationVideoPath) {
+          throw new Error("Vertex continuation is not configured for this run.");
         }
+        await updateGenerationJob({
+          provider: "vertex",
+          providerJobId: vertexModelId,
+          status: "in_progress",
+          progress: 0,
+        });
+        const aspectRatio = getVideoAspectRatio(size);
+        const resolution = getVideoResolution(size);
+        const normalizedPath = await normalizeVeoContinuationVideo({
+          inputPath: continuationVideoPath,
+          outputDir: generatedDir,
+          aspectRatio,
+          resolution,
+        });
+        try {
+          const continuationBuffer = await generateVertexVeoContinuation({
+            model: vertexModelId,
+            prompt,
+            aspectRatio,
+            resolution,
+            durationSeconds: VEO_CONTINUATION_SECONDS,
+            negativePrompt:
+              supportsNegativePrompt && generationNegativePrompt
+                ? generationNegativePrompt
+                : undefined,
+            inputVideoPath: normalizedPath,
+            gcsPrefix: `veo-continuation/${animationId}/manual`,
+            config: vertexConfig,
+          });
+          await fs.writeFile(videoPath, continuationBuffer);
+          logger.info("Vertex continuation generated", {
+            animationId,
+            model: vertexModelId,
+            aspectRatio,
+            resolution,
+          });
+        } finally {
+          await fs.rm(normalizedPath, { force: true });
+        }
+        await updateGenerationJob({
+          status: "completed",
+          progress: 100,
+          outputs: {
+            videoUrl: `/api/storage/animations/${animationId}/generated/${videoFilename}`,
+          },
+        });
       } else if (useReplicateVideo && replicateModel) {
         if (isToonCrafter) {
           if (selectedKeyframes.length < 2 || keyframePaths.length < 2) {
@@ -1429,7 +1962,6 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
           const startImageKey = modelConfig.startImageKey;
           const endImageKey = modelConfig.endImageKey;
           const resolutionKey = modelConfig.replicateResolutionKey;
-          const supportsAudio = Boolean(modelConfig.replicateSupportsAudio);
           const loopRequested = animation.generationLoop === true;
 
           const customStartPath = await resolveLocalImagePath(
@@ -1468,6 +2000,14 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
               });
             }
           }
+          if ((hasReferenceImages || effectActive) && endImagePath) {
+            logger.warn("End frame ignored for generation", {
+              animationId,
+              model,
+              reason: hasReferenceImages ? "reference_images" : "effect",
+            });
+            endImagePath = null;
+          }
           const input: Record<string, unknown> = {
             prompt,
             duration: seconds,
@@ -1481,6 +2021,19 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
               model,
               provider,
             });
+          }
+
+          if (supportsSeed && typeof seedValue === "number") {
+            input.seed = seedValue;
+          }
+          if (supportsConcepts && conceptValues.length > 0) {
+            input.concepts = conceptValues;
+          }
+          if (supportsEffect && effectActive) {
+            input.effect = generationEffect;
+          }
+          if (hasReferenceImages) {
+            input.reference_images = referenceImageInputs;
           }
 
           if (resolutionKey === "quality") {
@@ -1572,36 +2125,21 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
         roi: workingSpec.roi,
         frameWidth,
         frameHeight,
+        mode: "crop",
       });
-
-      await fs.rm(framesDir, { recursive: true, force: true });
-      await fs.mkdir(framesDir, { recursive: true });
 
       const rawFiles = sortFrameFiles(await fs.readdir(rawFramesDir));
       if (rawFiles.length === 0) {
         throw new Error("No frames extracted from video.");
       }
-      const baseSequence = rawFiles;
-      const pingpongSequence =
-        loopMode === "pingpong"
-          ? baseSequence.concat(baseSequence.slice(1, -1).reverse())
-          : baseSequence;
-
-      const generatedFrames = [];
-      for (let index = 0; index < pingpongSequence.length; index += 1) {
-        const inputName = pingpongSequence[index];
-        const inputPath = path.join(rawFramesDir, inputName);
-        const outputName = `frame_${String(index).padStart(3, "0")}.png`;
-        const outputPath = path.join(framesDir, outputName);
-        await fs.copyFile(inputPath, outputPath);
-        generatedFrames.push({
-          frameIndex: index,
-          url: `/api/storage/animations/${animationId}/generated/frames/${outputName}`,
-          isKeyframe: false,
-          generatedAt: new Date().toISOString(),
-          source: model,
-        });
-      }
+      const generatedFrames = await buildGeneratedFramesFromSequence({
+        animationId,
+        rawFramesDir,
+        outputDir: framesDir,
+        baseSequence: rawFiles,
+        loopMode,
+        source: model,
+      });
 
       const layout = buildSpritesheetLayout({
         frameWidth,
@@ -1740,22 +2278,31 @@ export async function POST(request: Request) {
 
   const model = String(animation.generationModel ?? "sora-2");
   const requestedProvider = String(animation.generationProvider ?? "").trim();
-  if (requestedProvider !== "openai" && requestedProvider !== "replicate") {
-    return Response.json(
-      { error: "Generation provider is required. Select OpenAI or Replicate." },
-      { status: 400 }
-    );
-  }
-  const modelProvider = getVideoModelConfig(model).provider;
-  if (requestedProvider !== modelProvider) {
+  const provider =
+    requestedProvider === "openai" ||
+    requestedProvider === "replicate" ||
+    requestedProvider === "fal" ||
+    requestedProvider === "vertex"
+      ? requestedProvider
+      : null;
+  if (!provider) {
     return Response.json(
       {
-        error: `Generation provider (${requestedProvider}) does not match model provider (${modelProvider}).`,
+        error:
+          "Generation provider is required. Select OpenAI, Replicate, Fal, or Vertex AI.",
       },
       { status: 400 }
     );
   }
-  const provider = requestedProvider;
+  const modelProvider = getVideoModelConfig(model).provider;
+  if (provider !== modelProvider) {
+    return Response.json(
+      {
+        error: `Generation provider (${provider}) does not match model provider (${modelProvider}).`,
+      },
+      { status: 400 }
+    );
+  }
   if (provider === "openai" && !process.env.OPENAI_API_KEY?.trim()) {
     return Response.json(
       {
@@ -1765,7 +2312,11 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
-  if (provider === "replicate" && getReplicateModelForVideo(model) && !process.env.REPLICATE_API_TOKEN?.trim()) {
+  if (
+    provider === "replicate" &&
+    getReplicateModelForVideo(model) &&
+    !process.env.REPLICATE_API_TOKEN?.trim()
+  ) {
     return Response.json(
       {
         error:
@@ -1773,6 +2324,47 @@ export async function POST(request: Request) {
       },
       { status: 500 }
     );
+  }
+  if (provider === "fal" && !process.env.FAL_KEY?.trim()) {
+    return Response.json(
+      {
+        error:
+          "Missing FAL_KEY. Add it to .env.local (or your env) and restart the dev server.",
+      },
+      { status: 500 }
+    );
+  }
+  if (provider === "vertex") {
+    const availability = getVertexVeoAvailability();
+    if (!availability.available || !availability.config) {
+      return Response.json(
+        { error: availability.reason ?? "Vertex configuration missing." },
+        { status: 500 }
+      );
+    }
+    if (animation.generationContinuationEnabled !== true) {
+      return Response.json(
+        { error: "Vertex continuation is disabled. Enable it in Animation Settings." },
+        { status: 400 }
+      );
+    }
+    const continuationVideoUrl =
+      typeof animation.generationContinuationVideoUrl === "string"
+        ? animation.generationContinuationVideoUrl.trim()
+        : "";
+    if (!continuationVideoUrl) {
+      return Response.json(
+        { error: "Vertex continuation requires an input video." },
+        { status: 400 }
+      );
+    }
+    const continuationPath = storagePathFromUrl(continuationVideoUrl);
+    if (!continuationPath || !(await fileExists(continuationPath))) {
+      return Response.json(
+        { error: "Continuation video not found." },
+        { status: 400 }
+      );
+    }
   }
 
   const now = new Date().toISOString();
