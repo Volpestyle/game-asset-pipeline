@@ -56,9 +56,8 @@ Minimal request shape:
 
 ## App integration notes
 
-- Continuation is only used for segmented generation when VEO_CONTINUATION_ENABLED=true.
-- The first segment uses the normal video generation path; subsequent segments use continuation when eligible.
-- End frames are ignored after the first segment when continuation is active.
+- Continuation is explicit in Animation Settings. Select the Vertex AI provider, choose a Veo 3.1 preview model, enable continuation, and upload an MP4 to extend.
+- Continuation uses the uploaded video as the input clip; start/end frame controls are not used.
 - Set VERTEX_PROJECT_ID (or GOOGLE_CLOUD_PROJECT) and credentials (GOOGLE_APPLICATION_CREDENTIALS).
 - VERTEX_LOCATION defaults to us-central1.
 - VEO_CONTINUATION_BUCKET (optional) uploads the input video to GCS; otherwise inline base64 is used.

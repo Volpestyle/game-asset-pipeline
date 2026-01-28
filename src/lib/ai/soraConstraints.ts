@@ -1,15 +1,23 @@
-export type VideoProvider = "openai" | "replicate";
-type VertexVeoModelId =
-  | "veo-3.1-generate-preview"
-  | "veo-3.1-fast-generate-preview";
+import type { VertexVeoModelId } from "@/lib/ai/vertexVeo";
+
+export type VideoProvider = "openai" | "replicate" | "fal" | "vertex";
 export type VideoModelId =
   | "sora-2"
   | "sora-2-pro"
   | "ray2"
   | "pixverse-v5"
   | "tooncrafter"
+  | "pikaframes"
+  | "wan2.2"
   | "veo-3.1"
-  | "veo-3.1-fast";
+  | "veo-3.1-fast"
+  | "veo-3.1-generate-preview"
+  | "veo-3.1-fast-generate-preview";
+
+export type VideoReferenceConstraints = {
+  aspectRatio: "16:9" | "9:16";
+  seconds: number;
+};
 
 type VideoModelConfig = {
   id: VideoModelId;
@@ -22,13 +30,56 @@ type VideoModelConfig = {
   vertexModelId?: VertexVeoModelId;
   supportsStartEnd?: boolean;
   supportsLoop?: boolean;
-  supportsContinuation?: boolean;
   supportsNegativePrompt?: boolean;
   startImageKey?: string;
   endImageKey?: string;
   replicateResolutionKey?: "quality" | "resolution" | null;
   replicateSupportsAudio?: boolean;
+  supportsSeed?: boolean;
+  supportsReferenceImages?: boolean;
+  referenceImageLimit?: number;
+  referenceImageConstraints?: VideoReferenceConstraints;
+  supportsConcepts?: boolean;
+  conceptOptions?: string[];
+  supportsEffect?: boolean;
 };
+
+const RAY2_CONCEPTS = [
+  "truck_left",
+  "pan_right",
+  "pedestal_down",
+  "low_angle",
+  "pedestal_up",
+  "selfie",
+  "pan_left",
+  "roll_right",
+  "zoom_in",
+  "over_the_shoulder",
+  "orbit_right",
+  "orbit_left",
+  "static",
+  "tiny_planet",
+  "high_angle",
+  "bolt_cam",
+  "dolly_zoom",
+  "overhead",
+  "zoom_out",
+  "handheld",
+  "roll_left",
+  "pov",
+  "aerial_drone",
+  "push_in",
+  "crane_down",
+  "truck_right",
+  "tilt_down",
+  "elevator_doors",
+  "tilt_up",
+  "ground_level",
+  "pull_out",
+  "aerial",
+  "crane_up",
+  "eye_level",
+] as const;
 
 const VIDEO_MODEL_LIST: VideoModelId[] = [
   "sora-2",
@@ -36,8 +87,12 @@ const VIDEO_MODEL_LIST: VideoModelId[] = [
   "ray2",
   "pixverse-v5",
   "tooncrafter",
+  "pikaframes",
+  "wan2.2",
   "veo-3.1-fast",
   "veo-3.1",
+  "veo-3.1-fast-generate-preview",
+  "veo-3.1-generate-preview",
 ];
 
 const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
@@ -71,6 +126,8 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     endImageKey: "end_image",
     replicateResolutionKey: null,
     replicateSupportsAudio: false,
+    supportsConcepts: true,
+    conceptOptions: [...RAY2_CONCEPTS],
   },
   "pixverse-v5": {
     id: "pixverse-v5",
@@ -87,6 +144,8 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     endImageKey: "last_frame_image",
     replicateResolutionKey: "quality",
     replicateSupportsAudio: false,
+    supportsSeed: true,
+    supportsEffect: true,
   },
   tooncrafter: {
     id: "tooncrafter",
@@ -108,6 +167,27 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     replicateResolutionKey: null,
     replicateSupportsAudio: false,
   },
+  pikaframes: {
+    id: "pikaframes",
+    label: "Pikaframes (Keyframes)",
+    provider: "fal",
+    sizeOptions: ["1280x720", "720x1280", "1920x1080", "1080x1920"],
+    secondsOptions: [4, 8, 12, 16, 20, 24],
+    promptProfile: "concise",
+    supportsNegativePrompt: true,
+    supportsSeed: true,
+  },
+  "wan2.2": {
+    id: "wan2.2",
+    label: "Wan 2.2 (Fal)",
+    provider: "fal",
+    sizeOptions: ["1280x720", "720x1280"],
+    secondsOptions: [4, 6, 8],
+    promptProfile: "concise",
+    supportsNegativePrompt: true,
+    supportsStartEnd: true,
+    supportsSeed: true,
+  },
   "veo-3.1-fast": {
     id: "veo-3.1-fast",
     label: "Veo 3.1 Fast",
@@ -116,15 +196,17 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     secondsOptions: [4, 6, 8],
     promptProfile: "concise",
     replicateModel: "google/veo-3.1-fast",
-    vertexModelId: "veo-3.1-fast-generate-preview",
     supportsStartEnd: true,
     supportsLoop: false,
-    supportsContinuation: true,
     supportsNegativePrompt: true,
     startImageKey: "image",
     endImageKey: "last_frame",
     replicateResolutionKey: "resolution",
     replicateSupportsAudio: true,
+    supportsSeed: true,
+    supportsReferenceImages: true,
+    referenceImageLimit: 3,
+    referenceImageConstraints: { aspectRatio: "16:9", seconds: 8 },
   },
   "veo-3.1": {
     id: "veo-3.1",
@@ -134,24 +216,53 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     secondsOptions: [4, 6, 8],
     promptProfile: "concise",
     replicateModel: "google/veo-3.1",
-    vertexModelId: "veo-3.1-generate-preview",
     supportsStartEnd: true,
     supportsLoop: false,
-    supportsContinuation: true,
     supportsNegativePrompt: true,
     startImageKey: "image",
     endImageKey: "last_frame",
     replicateResolutionKey: "resolution",
     replicateSupportsAudio: true,
+    supportsSeed: true,
+    supportsReferenceImages: true,
+    referenceImageLimit: 3,
+    referenceImageConstraints: { aspectRatio: "16:9", seconds: 8 },
+  },
+  "veo-3.1-fast-generate-preview": {
+    id: "veo-3.1-fast-generate-preview",
+    label: "Veo 3.1 Fast Preview (Vertex)",
+    provider: "vertex",
+    sizeOptions: ["1280x720", "720x1280", "1920x1080", "1080x1920"],
+    secondsOptions: [7],
+    promptProfile: "concise",
+    vertexModelId: "veo-3.1-fast-generate-preview",
+    supportsStartEnd: false,
+    supportsLoop: false,
+    supportsNegativePrompt: true,
+  },
+  "veo-3.1-generate-preview": {
+    id: "veo-3.1-generate-preview",
+    label: "Veo 3.1 Preview (Vertex)",
+    provider: "vertex",
+    sizeOptions: ["1280x720", "720x1280", "1920x1080", "1080x1920"],
+    secondsOptions: [7],
+    promptProfile: "concise",
+    vertexModelId: "veo-3.1-generate-preview",
+    supportsStartEnd: false,
+    supportsLoop: false,
+    supportsNegativePrompt: true,
   },
 };
 
 const DEFAULT_MODEL: VideoModelId = "sora-2";
 
+export function isVideoModelId(value: string): value is VideoModelId {
+  return VIDEO_MODEL_LIST.some((id) => id === value);
+}
+
 function resolveVideoModelId(model?: string): VideoModelId {
   const cleaned = (model ?? "").trim();
-  const key = cleaned as VideoModelId;
-  if (key && VIDEO_MODELS[key]) return key;
+  if (isVideoModelId(cleaned)) return cleaned;
   if (cleaned) {
     const match = VIDEO_MODEL_LIST.find(
       (id) => VIDEO_MODELS[id].replicateModel === cleaned
@@ -188,7 +299,9 @@ export function getReplicateModelForVideo(model?: string): string | undefined {
   return getVideoModelConfig(model).replicateModel;
 }
 
-export function getVertexModelForVideo(model?: string): string | undefined {
+export function getVertexModelForVideo(
+  model?: string
+): VertexVeoModelId | undefined {
   return getVideoModelConfig(model).vertexModelId;
 }
 
@@ -200,12 +313,38 @@ export function getVideoModelSupportsLoop(model?: string): boolean {
   return Boolean(getVideoModelConfig(model).supportsLoop);
 }
 
-export function getVideoModelSupportsContinuation(model?: string): boolean {
-  return Boolean(getVideoModelConfig(model).supportsContinuation);
-}
-
 export function getVideoModelSupportsNegativePrompt(model?: string): boolean {
   return Boolean(getVideoModelConfig(model).supportsNegativePrompt);
+}
+
+export function getVideoModelSupportsSeed(model?: string): boolean {
+  return Boolean(getVideoModelConfig(model).supportsSeed);
+}
+
+export function getVideoModelSupportsReferenceImages(model?: string): boolean {
+  return Boolean(getVideoModelConfig(model).supportsReferenceImages);
+}
+
+export function getVideoModelReferenceImageLimit(model?: string): number {
+  return getVideoModelConfig(model).referenceImageLimit ?? 0;
+}
+
+export function getVideoModelReferenceConstraints(
+  model?: string
+): VideoReferenceConstraints | undefined {
+  return getVideoModelConfig(model).referenceImageConstraints;
+}
+
+export function getVideoModelSupportsConcepts(model?: string): boolean {
+  return Boolean(getVideoModelConfig(model).supportsConcepts);
+}
+
+export function getVideoModelConceptOptions(model?: string): string[] {
+  return getVideoModelConfig(model).conceptOptions ?? [];
+}
+
+export function getVideoModelSupportsEffect(model?: string): boolean {
+  return Boolean(getVideoModelConfig(model).supportsEffect);
 }
 
 export function getVideoModelStartImageKey(model?: string): string | undefined {
@@ -260,11 +399,12 @@ export function coerceVideoSecondsForModel(
 ): number {
   const options = getVideoSecondsOptions(model);
   if (!options.length) return 4;
-  if (!Number.isFinite(seconds)) return options[0];
-  if (options.includes(seconds as number)) return seconds as number;
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) {
+    return options[0];
+  }
+  if (options.includes(seconds)) return seconds;
   return options.reduce((closest, option) => {
-    return Math.abs(option - (seconds as number)) <
-      Math.abs(closest - (seconds as number))
+    return Math.abs(option - seconds) < Math.abs(closest - seconds)
       ? option
       : closest;
   }, options[0]);

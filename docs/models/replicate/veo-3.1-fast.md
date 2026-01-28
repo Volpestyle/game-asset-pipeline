@@ -138,7 +138,7 @@ Key constraints for Vertex continuation:
 - Video input is mutually exclusive with image + last-frame conditioning.
 
 App integration notes:
-- Set VEO_CONTINUATION_ENABLED=true to opt-in.
+- Continuation runs through the Vertex AI provider (preview models). Select Vertex AI in Animation Settings, enable continuation, and upload the source MP4.
 - Provide Vertex credentials (for example GOOGLE_APPLICATION_CREDENTIALS) and a project ID via VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT.
 - If VEO_CONTINUATION_BUCKET is set, inputs are uploaded to GCS; otherwise inline base64 video is used.
 

@@ -1,4 +1,8 @@
-export type ImageModelId = "rd-fast" | "rd-plus" | "nano-banana-pro";
+export type ImageModelId =
+  | "rd-fast"
+  | "rd-plus"
+  | "nano-banana-pro"
+  | "flux-2-max";
 
 type ImageModelConfig = {
   id: ImageModelId;
@@ -13,6 +17,7 @@ type ImageModelConfig = {
   supportsSeed: boolean;
   supportsAspectRatio: boolean;
   supportsResolution: boolean;
+  supportsPromptExpansion: boolean;
   supportsMultipleImages: boolean;
   maxImageCount: number;
   aspectRatioOptions?: string[];
@@ -61,7 +66,14 @@ const RD_PLUS_STYLES = [
   "skill_icon",
 ];
 
-const IMAGE_MODEL_LIST: ImageModelId[] = ["rd-fast", "rd-plus", "nano-banana-pro"];
+const EMPTY_STYLES: string[] = [];
+
+const IMAGE_MODEL_LIST: ImageModelId[] = [
+  "rd-fast",
+  "rd-plus",
+  "nano-banana-pro",
+  "flux-2-max",
+];
 
 const IMAGE_MODELS: Record<ImageModelId, ImageModelConfig> = {
   "rd-fast": {
@@ -77,6 +89,7 @@ const IMAGE_MODELS: Record<ImageModelId, ImageModelConfig> = {
     supportsSeed: true,
     supportsAspectRatio: false,
     supportsResolution: false,
+    supportsPromptExpansion: true,
     supportsMultipleImages: false,
     maxImageCount: 1,
     defaultWidth: 256,
@@ -95,6 +108,7 @@ const IMAGE_MODELS: Record<ImageModelId, ImageModelConfig> = {
     supportsSeed: true,
     supportsAspectRatio: false,
     supportsResolution: false,
+    supportsPromptExpansion: true,
     supportsMultipleImages: false,
     maxImageCount: 1,
     defaultWidth: 256,
@@ -112,10 +126,38 @@ const IMAGE_MODELS: Record<ImageModelId, ImageModelConfig> = {
     supportsSeed: false,
     supportsAspectRatio: true,
     supportsResolution: true,
+    supportsPromptExpansion: false,
     supportsMultipleImages: true,
     maxImageCount: 14,
     aspectRatioOptions: ["1:1", "4:3", "3:4", "16:9", "9:16"],
     resolutionOptions: ["1K", "2K", "4K"],
+    defaultWidth: 1024,
+    defaultHeight: 1024,
+  },
+  "flux-2-max": {
+    id: "flux-2-max",
+    label: "FLUX 2 Max",
+    replicateModel: "black-forest-labs/flux-2-max",
+    supportsImg2Img: true,
+    supportsStrength: false,
+    supportsPalette: false,
+    supportsTiling: false,
+    supportsRemoveBg: false,
+    supportsSeed: true,
+    supportsAspectRatio: true,
+    supportsResolution: true,
+    supportsPromptExpansion: false,
+    supportsMultipleImages: true,
+    maxImageCount: 8,
+    aspectRatioOptions: [
+      "1:1",
+      "4:3",
+      "3:4",
+      "16:9",
+      "9:16",
+      "match_input_image",
+    ],
+    resolutionOptions: ["0.5 MP", "1 MP", "2 MP", "4 MP", "match_input_image"],
     defaultWidth: 1024,
     defaultHeight: 1024,
   },
@@ -136,7 +178,7 @@ export function getImageModelOptions(): Array<{
 }
 
 export function getImageModelStyles(modelId: ImageModelId): string[] {
-  return IMAGE_MODELS[modelId].styles ?? [];
+  return IMAGE_MODELS[modelId].styles ?? EMPTY_STYLES;
 }
 
 export function getReplicateModelForImage(modelId: ImageModelId): string {
