@@ -49,6 +49,8 @@ const PROMPT_PROFILE_OPTIONS: { value: PromptProfile; label: string }[] = [
 const PROVIDER_OPTIONS: { value: GenerationProvider; label: string }[] = [
   { value: "openai", label: "OpenAI" },
   { value: "replicate", label: "Replicate" },
+  { value: "fal", label: "Fal" },
+  { value: "vertex", label: "Vertex AI" },
 ];
 
 const NewAnimationForm = () => {
@@ -109,6 +111,8 @@ const NewAnimationForm = () => {
       : expectedFrameCount;
   const supportsNegativePrompt = getVideoModelSupportsNegativePrompt(generationModel);
   const isToonCrafter = generationModel === "tooncrafter";
+  const isPikaframes = generationModel === "pikaframes";
+  const isWan = generationModel === "wan2.2";
 
   const frameWidth = selectedCharacter?.baseWidth ?? 253;
   const frameHeight = selectedCharacter?.baseHeight ?? 504;
@@ -544,7 +548,12 @@ const NewAnimationForm = () => {
                 value={generationProvider}
                 onChange={(event) => {
                   const nextProvider = event.target.value;
-                  if (nextProvider === "openai" || nextProvider === "replicate") {
+                  if (
+                    nextProvider === "openai" ||
+                    nextProvider === "replicate" ||
+                    nextProvider === "fal" ||
+                    nextProvider === "vertex"
+                  ) {
                     setGenerationProvider(nextProvider);
                   }
                 }}
@@ -578,6 +587,16 @@ const NewAnimationForm = () => {
               <p className="text-[10px] text-muted-foreground">
                 Pick the provider and fidelity level that fit your output.
               </p>
+              {isPikaframes && (
+                <p className="text-[10px] text-muted-foreground">
+                  Pikaframes uses 2-5 timeline keyframes and derives timing from frame spacing.
+                </p>
+              )}
+              {isWan && (
+                <p className="text-[10px] text-muted-foreground">
+                  Wan 2.2 uses the Start/End frames panel for overrides.
+                </p>
+              )}
             </div>
 
             <div className="tech-border bg-card p-4 space-y-2">

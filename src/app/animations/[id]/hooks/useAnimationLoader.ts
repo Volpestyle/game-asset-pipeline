@@ -3,6 +3,10 @@ import {
   coerceVideoSecondsForModel,
   coerceVideoSizeForModel,
   getExpectedFrameCount,
+  getVideoAspectRatio,
+  getVideoModelReferenceConstraints,
+  getVideoModelSupportsReferenceImages,
+  getVideoSizeOptions,
 } from "@/components/animation";
 import { requestJson } from "@/lib/api/client";
 import type { Animation, Character } from "@/types";
@@ -57,6 +61,61 @@ export function useAnimationLoader(animationId: string) {
             generationSeconds: coercedSeconds,
             frameCount,
           };
+        }
+
+        const referenceImages = Array.isArray(
+          nextAnimation.generationReferenceImageUrls
+        )
+          ? nextAnimation.generationReferenceImageUrls
+          : [];
+        const supportsReferenceImages = getVideoModelSupportsReferenceImages(model);
+        const referenceConstraints = getVideoModelReferenceConstraints(model);
+        if (
+          supportsReferenceImages &&
+          referenceImages.length > 0 &&
+          referenceConstraints
+        ) {
+          const sizeOptions = getVideoSizeOptions(model);
+          let nextSize = String(nextAnimation.generationSize ?? "");
+          let nextSeconds = Number(nextAnimation.generationSeconds ?? Number.NaN);
+          let didAdjust = false;
+
+          if (
+            referenceConstraints.seconds &&
+            Number.isFinite(referenceConstraints.seconds) &&
+            nextSeconds !== referenceConstraints.seconds
+          ) {
+            nextSeconds = referenceConstraints.seconds;
+            didAdjust = true;
+          }
+
+          if (
+            referenceConstraints.aspectRatio &&
+            getVideoAspectRatio(nextSize) !== referenceConstraints.aspectRatio
+          ) {
+            const fallback = sizeOptions.find(
+              (size) =>
+                getVideoAspectRatio(size) === referenceConstraints.aspectRatio
+            );
+            if (fallback) {
+              nextSize = fallback;
+              didAdjust = true;
+            }
+          }
+
+          if (didAdjust) {
+            const fpsValue = Number(nextAnimation.extractFps ?? nextAnimation.fps ?? 12);
+            const frameCount = getExpectedFrameCount(nextSeconds, fpsValue);
+            const note =
+              `Adjusted for reference images (${referenceConstraints.aspectRatio}, ${referenceConstraints.seconds}s).`;
+            nextAnimation = {
+              ...nextAnimation,
+              generationSize: nextSize,
+              generationSeconds: nextSeconds,
+              frameCount,
+              generationNote: note,
+            };
+          }
         }
         updateAnimationState(nextAnimation);
 

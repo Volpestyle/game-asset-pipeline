@@ -49,7 +49,7 @@ const RD_PLUS_STYLES = [
 
 export interface KeyframeFormData {
   frameIndex: number;
-  model: "rd-fast" | "rd-plus" | "nano-banana-pro";
+  model: "rd-fast" | "rd-plus" | "nano-banana-pro" | "flux-2-max";
   prompt: string;
   style: string;
   strength: number;
@@ -61,8 +61,11 @@ export interface KeyframeFormData {
   tileY: boolean;
   seed: string;
   bypassPromptExpansion: boolean;
+  numImages: number;
+  outputFormat: string;
+  safetyFilterLevel: string;
   easing: EasingType;
-  // Multi-image support for nano-banana-pro
+  // Multi-image support for models like nano-banana-pro or flux-2-max
   referenceImages?: string[];
 }
 
@@ -158,10 +161,14 @@ export function AdvancedKeyframePanel({
     tileY: existingKeyframe?.tileY ?? false,
     seed: existingKeyframe?.seed?.toString() ?? "",
     bypassPromptExpansion: existingKeyframe?.bypassPromptExpansion ?? false,
+    numImages: 1,
+    outputFormat: "png",
+    safetyFilterLevel: "block_only_high",
     easing: existingKeyframe?.easing ?? "linear",
   });
 
   const isRdModel = formData.model === "rd-fast" || formData.model === "rd-plus";
+  const isNanoBanana = formData.model === "nano-banana-pro";
   const modelConfig = getImageModelConfig(formData.model);
   const supportsMultiRef = modelConfig.supportsMultipleImages;
   const maxImageCount = modelConfig.maxImageCount;
@@ -385,10 +392,10 @@ export function AdvancedKeyframePanel({
             </div>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-[10px] text-muted-foreground tracking-widest">
-              Model
-            </label>
+      <div className="space-y-2">
+        <label className="text-[10px] text-muted-foreground tracking-widest">
+          Model
+        </label>
             <select
               value={formData.model}
               onChange={(e) =>
@@ -402,6 +409,7 @@ export function AdvancedKeyframePanel({
               <option value="rd-fast">rd-fast (faster)</option>
               <option value="rd-plus">rd-plus (higher quality)</option>
               <option value="nano-banana-pro">nano-banana-pro (general)</option>
+              <option value="flux-2-max">flux-2-max (high fidelity)</option>
             </select>
           </div>
         </div>
@@ -419,7 +427,7 @@ export function AdvancedKeyframePanel({
           />
         </div>
 
-        {/* Multi-reference image selection (for nano-banana-pro) */}
+        {/* Multi-reference image selection (for multi-image models) */}
         {supportsMultiRef && (
           <div className="space-y-3 pt-2 border-t border-border">
             <div className="flex items-center justify-between">
@@ -586,7 +594,7 @@ export function AdvancedKeyframePanel({
             />
             {!isRdModel && (
               <p className="text-[10px] text-muted-foreground">
-                Strength is ignored for nano-banana-pro.
+                Strength is ignored for nano-banana-pro and flux-2-max.
               </p>
             )}
           </div>
@@ -798,6 +806,7 @@ export function AdvancedKeyframePanel({
                 <option value="rd-plus">rd-plus (Quality)</option>
                 <option value="rd-fast">rd-fast (Speed)</option>
                 <option value="nano-banana-pro">nano-banana-pro (General)</option>
+                <option value="flux-2-max">flux-2-max (High fidelity)</option>
               </select>
               <Button
                 onClick={onInterpolate}
@@ -825,10 +834,10 @@ export function AdvancedKeyframePanel({
         {showAdvanced && (
           <div className="space-y-4 pt-2 border-t border-border">
             <div className="text-[10px] text-muted-foreground tracking-wider">
-              Advanced Options (rd-fast / rd-plus)
+              Advanced Options
             </div>
 
-            {isRdModel ? (
+            {isRdModel && (
               <>
                 {/* Palette upload */}
                 <div className="space-y-2">
@@ -894,6 +903,28 @@ export function AdvancedKeyframePanel({
                   />
                 </div>
 
+                {/* Num images */}
+                <div className="space-y-2">
+                  <label className="text-[10px] text-muted-foreground tracking-widest">
+                    Num Images
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={4}
+                    value={formData.numImages}
+                    onChange={(e) => {
+                      const next = Number(e.target.value);
+                      if (!Number.isFinite(next)) return;
+                      setFormData((prev) => ({
+                        ...prev,
+                        numImages: Math.min(4, Math.max(1, Math.round(next))),
+                      }));
+                    }}
+                    className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                  />
+                </div>
+
                 {/* Bypass prompt expansion */}
                 <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
                   <input
@@ -905,9 +936,56 @@ export function AdvancedKeyframePanel({
                   Bypass prompt expansion (use prompt as-is)
                 </label>
               </>
-            ) : (
+            )}
+
+            {isNanoBanana && (
+              <>
+                <div className="space-y-2">
+                  <label className="text-[10px] text-muted-foreground tracking-widest">
+                    Output Format
+                  </label>
+                  <select
+                    value={formData.outputFormat}
+                    onChange={(e) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        outputFormat: e.target.value,
+                      }))
+                    }
+                    className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                  >
+                    <option value="png">png</option>
+                    <option value="jpg">jpg</option>
+                    <option value="jpeg">jpeg</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] text-muted-foreground tracking-widest">
+                    Safety Filter
+                  </label>
+                  <select
+                    value={formData.safetyFilterLevel}
+                    onChange={(e) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        safetyFilterLevel: e.target.value,
+                      }))
+                    }
+                    className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                  >
+                    <option value="block_only_high">block_only_high</option>
+                    <option value="block_medium_and_above">
+                      block_medium_and_above
+                    </option>
+                    <option value="block_low_and_above">block_low_and_above</option>
+                  </select>
+                </div>
+              </>
+            )}
+
+            {!isRdModel && !isNanoBanana && (
               <p className="text-[10px] text-muted-foreground">
-                Advanced options are only supported for rd-fast and rd-plus.
+                Advanced options are not available for this model.
               </p>
             )}
           </div>

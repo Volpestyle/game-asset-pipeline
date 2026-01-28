@@ -144,8 +144,12 @@ function FrameCanvas({
             className="absolute"
             style={{
               imageRendering: "pixelated",
-              left: `${(containerSize - frameWidth * currentZoom) / 2 + offset.x}px`,
-              top: `${(containerSize - frameHeight * currentZoom) / 2 + offset.y}px`,
+              width: Math.round(frameWidth * currentZoom),
+              height: Math.round(frameHeight * currentZoom),
+              left: 0,
+              top: 0,
+              transform: `translate3d(${Math.round((containerSize - frameWidth * currentZoom) / 2 + offset.x)}px, ${Math.round((containerSize - frameHeight * currentZoom) / 2 + offset.y)}px, 0)`,
+              willChange: "transform",
             }}
           />
         ) : error ? (
@@ -166,10 +170,12 @@ function FrameCanvas({
           className="absolute"
           style={{
             imageRendering: "pixelated",
-            width: frameWidth * currentZoom,
-            height: frameHeight * currentZoom,
-            left: `${(containerSize - frameWidth * currentZoom) / 2 + offset.x}px`,
-            top: `${(containerSize - frameHeight * currentZoom) / 2 + offset.y}px`,
+            width: Math.round(frameWidth * currentZoom),
+            height: Math.round(frameHeight * currentZoom),
+            left: 0,
+            top: 0,
+            transform: `translate3d(${Math.round((containerSize - frameWidth * currentZoom) / 2 + offset.x)}px, ${Math.round((containerSize - frameHeight * currentZoom) / 2 + offset.y)}px, 0)`,
+            willChange: "transform",
           }}
         />
       ) : (
@@ -310,7 +316,7 @@ export function FramePreview({
   );
 
   const drawFrame = useCallback(
-    (canvas: HTMLCanvasElement | null, currentZoom: number, offset: { x: number; y: number }) => {
+    (canvas: HTMLCanvasElement | null, currentZoom: number, _offset: { x: number; y: number }) => {
       if (!canvas || !spritesheetUrl || !isLoaded) return;
 
       const ctx = canvas.getContext("2d");
@@ -324,16 +330,21 @@ export function FramePreview({
       const sx = col * frameWidth;
       const sy = row * frameHeight;
 
-      const displayWidth = frameWidth * currentZoom;
-      const displayHeight = frameHeight * currentZoom;
-      canvas.width = displayWidth;
-      canvas.height = displayHeight;
+      // Use integer dimensions and account for devicePixelRatio for crisp rendering
+      const dpr = window.devicePixelRatio || 1;
+      const displayWidth = Math.round(frameWidth * currentZoom);
+      const displayHeight = Math.round(frameHeight * currentZoom);
 
-      ctx.clearRect(0, 0, displayWidth, displayHeight);
+      // Set canvas internal resolution to match device pixels
+      canvas.width = displayWidth * dpr;
+      canvas.height = displayHeight * dpr;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.imageSmoothingEnabled = false;
 
-      ctx.save();
-      ctx.translate(offset.x, offset.y);
+      // Scale context to match devicePixelRatio
+      ctx.scale(dpr, dpr);
+
       ctx.drawImage(
         img,
         sx,
@@ -345,7 +356,6 @@ export function FramePreview({
         displayWidth,
         displayHeight
       );
-      ctx.restore();
     },
     [spritesheetUrl, currentFrame, frameWidth, frameHeight, columns, isLoaded]
   );

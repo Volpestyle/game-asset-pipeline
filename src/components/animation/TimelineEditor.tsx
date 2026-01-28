@@ -25,7 +25,14 @@ export function TimelineEditor({
   onKeyframeAction,
 }: TimelineEditorProps) {
   const [isPlaying, setIsPlaying] = useState(false);
-  const playbackRef = useRef<NodeJS.Timeout | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const lastFrameTimeRef = useRef<number>(0);
+  const frameRef = useRef(currentFrame);
+
+  // Keep frameRef in sync with currentFrame prop
+  useEffect(() => {
+    frameRef.current = currentFrame;
+  }, [currentFrame]);
 
   const generatedFrames = animation.generatedFrames ?? [];
   const generatedCount =
@@ -36,24 +43,43 @@ export function TimelineEditor({
   );
   const frameDuration = 1000 / animation.fps;
 
-  // Playback loop
+  // Playback loop using requestAnimationFrame for smooth, consistent timing
   useEffect(() => {
-    if (isPlaying) {
-      playbackRef.current = setInterval(() => {
-        onFrameChange((currentFrame + 1) % frameCount);
-      }, frameDuration);
-    } else {
-      if (playbackRef.current) {
-        clearInterval(playbackRef.current);
-        playbackRef.current = null;
+    if (!isPlaying) {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
+      return;
     }
+
+    const tick = (timestamp: number) => {
+      if (!lastFrameTimeRef.current) {
+        lastFrameTimeRef.current = timestamp;
+      }
+
+      const elapsed = timestamp - lastFrameTimeRef.current;
+
+      if (elapsed >= frameDuration) {
+        const nextFrame = (frameRef.current + 1) % frameCount;
+        frameRef.current = nextFrame;
+        onFrameChange(nextFrame);
+        lastFrameTimeRef.current = timestamp - (elapsed % frameDuration);
+      }
+
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
+    lastFrameTimeRef.current = 0;
+    rafRef.current = requestAnimationFrame(tick);
+
     return () => {
-      if (playbackRef.current) {
-        clearInterval(playbackRef.current);
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
     };
-  }, [isPlaying, currentFrame, frameCount, frameDuration, onFrameChange]);
+  }, [isPlaying, frameCount, frameDuration, onFrameChange]);
 
   // Keyboard controls
   useEffect(() => {

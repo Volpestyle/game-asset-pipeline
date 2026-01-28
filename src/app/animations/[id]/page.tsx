@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout";
 import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
+import { buildPikaframesPlan } from "@/lib/ai/pikaframes";
 import {
   TimelineEditor,
   FramePreview,
@@ -21,13 +22,23 @@ import {
   getVideoSecondsOptions,
   getVideoModelSupportsStartEnd,
   getVideoModelSupportsLoop,
-  getVideoModelSupportsContinuation,
   getVideoModelSupportsNegativePrompt,
+  getVideoModelSupportsSeed,
   getVideoModelPromptProfile,
   getVideoModelLabel,
+  getVideoModelSupportsReferenceImages,
+  getVideoModelReferenceImageLimit,
+  getVideoModelReferenceConstraints,
+  getVideoModelSupportsConcepts,
+  getVideoModelConceptOptions,
+  getVideoModelSupportsEffect,
+  getVideoModelSupportsAudio,
+  getVideoAspectRatio,
+  getVideoSizeOptions,
 } from "@/components/animation";
 import type { KeyframeFormData } from "@/components/animation";
 import { requestJson, requestFormData } from "@/lib/api/client";
+import { logger } from "@/lib/logger";
 import type {
   Animation,
   AnimationStyle,
@@ -58,6 +69,8 @@ const PROMPT_PROFILE_OPTIONS: { value: PromptProfile; label: string }[] = [
 const PROVIDER_OPTIONS: { value: GenerationProvider; label: string }[] = [
   { value: "openai", label: "OpenAI" },
   { value: "replicate", label: "Replicate" },
+  { value: "fal", label: "Fal" },
+  { value: "vertex", label: "Vertex AI" },
 ];
 
 export default function AnimationDetailPage() {
@@ -91,16 +104,23 @@ export default function AnimationDetailPage() {
   const [isRefSaving, setIsRefSaving] = useState(false);
   const allModelOptions = useMemo(() => getVideoModelOptions(), []);
   const [isGenerationFrameSaving, setIsGenerationFrameSaving] = useState(false);
+  const [generationStartPreview, setGenerationStartPreview] = useState<string | null>(null);
+  const [generationEndPreview, setGenerationEndPreview] = useState<string | null>(null);
+  const [isContinuationVideoSaving, setIsContinuationVideoSaving] = useState(false);
   const [spritesheetExpanded, setSpritesheetExpanded] = useState(() => {
     if (typeof window === "undefined") return true;
     const stored = localStorage.getItem("spritesheet-panel-expanded");
     return stored === null ? true : stored === "true";
   });
   const [isPromptEditing, setIsPromptEditing] = useState(false);
+  const [showWanAdvanced, setShowWanAdvanced] = useState(false);
   const [draftPromptConcise, setDraftPromptConcise] = useState("");
   const [draftPromptVerbose, setDraftPromptVerbose] = useState("");
   const selectedProvider =
-    animation?.generationProvider === "openai" || animation?.generationProvider === "replicate"
+    animation?.generationProvider === "openai" ||
+    animation?.generationProvider === "replicate" ||
+    animation?.generationProvider === "fal" ||
+    animation?.generationProvider === "vertex"
       ? animation.generationProvider
       : "";
   const modelOptions = useMemo(() => {
@@ -134,6 +154,22 @@ export default function AnimationDetailPage() {
     },
     []
   );
+
+  useEffect(() => {
+    return () => {
+      if (generationStartPreview) {
+        URL.revokeObjectURL(generationStartPreview);
+      }
+    };
+  }, [generationStartPreview]);
+
+  useEffect(() => {
+    return () => {
+      if (generationEndPreview) {
+        URL.revokeObjectURL(generationEndPreview);
+      }
+    };
+  }, [generationEndPreview]);
 
   useEffect(() => {
     if (!animation) return;
@@ -180,6 +216,59 @@ export default function AnimationDetailPage() {
     setDraftPromptVerbose(effectiveVerbose);
   }, [animation, character, isPromptEditing]);
 
+  useEffect(() => {
+    if (!animation) return;
+    if (!supportsReferenceImages || !referenceConstraints) return;
+    if (generationReferenceImageUrls.length === 0) return;
+
+    setAnimation((prev) => {
+      if (!prev) return prev;
+      let nextSize = String(prev.generationSize ?? "");
+      let nextSeconds = Number(prev.generationSeconds ?? Number.NaN);
+      let didUpdate = false;
+
+      if (
+        Number.isFinite(referenceConstraints.seconds) &&
+        nextSeconds !== referenceConstraints.seconds
+      ) {
+        nextSeconds = referenceConstraints.seconds;
+        didUpdate = true;
+      }
+
+      if (
+        referenceConstraints.aspectRatio &&
+        getVideoAspectRatio(nextSize) !== referenceConstraints.aspectRatio
+      ) {
+        const sizeOptions = getVideoSizeOptions(generationModel);
+        const fallback = sizeOptions.find(
+          (size) => getVideoAspectRatio(size) === referenceConstraints.aspectRatio
+        );
+        if (fallback && fallback !== nextSize) {
+          nextSize = fallback;
+          didUpdate = true;
+        }
+      }
+
+      if (!didUpdate) return prev;
+
+      const fpsValue = Number(prev.extractFps ?? prev.fps ?? 12);
+      const frameCount = getExpectedFrameCount(nextSeconds, fpsValue);
+      return {
+        ...prev,
+        generationSize: nextSize,
+        generationSeconds: nextSeconds,
+        frameCount,
+      };
+    });
+  }, [
+    animation,
+    supportsReferenceImages,
+    referenceConstraints,
+    generationReferenceImageUrls.length,
+    generationModel,
+    setAnimation,
+  ]);
+
   const handleSave = async () => {
     if (!animationId || !animation) return;
     setIsSaving(true);
@@ -213,7 +302,12 @@ export default function AnimationDetailPage() {
 
     const currentModel = String(animation.generationModel ?? "sora-2");
     const providerValue = animation.generationProvider;
-    if (providerValue !== "openai" && providerValue !== "replicate") {
+    if (
+      providerValue !== "openai" &&
+      providerValue !== "replicate" &&
+      providerValue !== "fal" &&
+      providerValue !== "vertex"
+    ) {
       setError("Select a generation provider before starting.");
       return;
     }
@@ -225,6 +319,20 @@ export default function AnimationDetailPage() {
         `Selected provider (${providerValue}) does not match model provider (${expectedProvider}).`
       );
       return;
+    }
+    if (providerValue === "vertex") {
+      if (animation.generationContinuationEnabled !== true) {
+        setError("Enable continuation before running Vertex generation.");
+        return;
+      }
+      const continuationVideoUrl =
+        typeof animation.generationContinuationVideoUrl === "string"
+          ? animation.generationContinuationVideoUrl.trim()
+          : "";
+      if (!continuationVideoUrl) {
+        setError("Upload a continuation video before generating.");
+        return;
+      }
     }
 
     // Validate size before generating
@@ -240,8 +348,15 @@ export default function AnimationDetailPage() {
     }
 
     const useQueue =
-      generationPlan.mode === "segments" && generationPlan.segments.length > 0;
-    if (generationPlan.mode === "segments" && generationPlan.segments.length === 0) {
+      providerValue !== "vertex" &&
+      !isPikaframes &&
+      generationPlan.mode === "segments" &&
+      generationPlan.segments.length > 0;
+    if (
+      !isPikaframes &&
+      generationPlan.mode === "segments" &&
+      generationPlan.segments.length === 0
+    ) {
       setError("No valid keyframe segments to generate.");
       return;
     }
@@ -387,6 +502,9 @@ export default function AnimationDetailPage() {
         formData.append("tileX", String(data.tileX));
         formData.append("tileY", String(data.tileY));
         formData.append("bypassPromptExpansion", String(data.bypassPromptExpansion));
+        formData.append("numImages", String(data.numImages));
+        formData.append("outputFormat", data.outputFormat);
+        formData.append("safetyFilterLevel", data.safetyFilterLevel);
         if (data.seed.trim()) {
           formData.append("seed", data.seed.trim());
         }
@@ -403,11 +521,16 @@ export default function AnimationDetailPage() {
         const respData = await requestFormData<{
           animation: Animation;
           generation?: KeyframeGeneration;
+          generations?: KeyframeGeneration[];
         }>(`/api/animations/${animationId}/keyframes`, formData, {
           errorMessage: "Keyframe update failed.",
         });
         updateAnimationState(respData.animation);
-        if (respData.generation) {
+        if (Array.isArray(respData.generations) && respData.generations.length > 0) {
+          respData.generations.forEach((generation) =>
+            pushKeyframeGeneration(data.frameIndex, generation)
+          );
+        } else if (respData.generation) {
           pushKeyframeGeneration(data.frameIndex, respData.generation);
         }
         setMessage(`Keyframe updated at frame ${data.frameIndex}.`);
@@ -489,6 +612,15 @@ export default function AnimationDetailPage() {
             "bypassPromptExpansion",
             String(generation.bypassPromptExpansion)
           );
+        }
+        if (typeof generation.numImages === "number") {
+          formData.append("numImages", String(generation.numImages));
+        }
+        if (generation.outputFormat) {
+          formData.append("outputFormat", generation.outputFormat);
+        }
+        if (generation.safetyFilterLevel) {
+          formData.append("safetyFilterLevel", generation.safetyFilterLevel);
         }
         if (typeof generation.seed === "number") {
           formData.append("seed", String(generation.seed));
@@ -749,9 +881,36 @@ export default function AnimationDetailPage() {
   const handleGenerationFrameUpload = useCallback(
     async (kind: "start" | "end", file: File | null) => {
       if (!animationId || !file) return;
+      if (!file.type.startsWith("image/")) {
+        setError("Unsupported file type. Please upload an image.");
+        logger.warn("Generation frame rejected", {
+          kind,
+          fileName: file.name,
+          fileType: file.type,
+        });
+        return;
+      }
       setIsGenerationFrameSaving(true);
       setMessage(null);
       setError(null);
+      try {
+        const previewUrl = URL.createObjectURL(file);
+        if (kind === "start") {
+          setGenerationStartPreview(previewUrl);
+        } else {
+          setGenerationEndPreview(previewUrl);
+        }
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Failed to preview frame.";
+        logger.error("Generation frame preview failed", {
+          kind,
+          fileName: file.name,
+          fileType: file.type,
+          fileSize: file.size,
+          error: message,
+        });
+      }
       try {
         const formData = new FormData();
         formData.append("kind", kind);
@@ -767,10 +926,53 @@ export default function AnimationDetailPage() {
         setError(err instanceof Error ? err.message : "Failed to upload frame.");
       } finally {
         setIsGenerationFrameSaving(false);
+        if (kind === "start") {
+          setGenerationStartPreview(null);
+        } else {
+          setGenerationEndPreview(null);
+        }
       }
     },
-    [animationId, updateAnimationState]
+    [animationId, updateAnimationState, setError]
   );
+
+  const handleContinuationVideoUpload = useCallback(
+    async (file: File | null) => {
+      if (!animationId || !file) return;
+      setIsContinuationVideoSaving(true);
+      setMessage(null);
+      setError(null);
+      try {
+        const formData = new FormData();
+        formData.append("video", file, file.name);
+        const data = await requestFormData<{ animation: Animation }>(
+          `/api/animations/${animationId}/continuation-video`,
+          formData,
+          { errorMessage: "Failed to upload continuation video." }
+        );
+        updateAnimationState(data.animation);
+        setMessage("Continuation video uploaded.");
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to upload continuation video."
+        );
+      } finally {
+        setIsContinuationVideoSaving(false);
+      }
+    },
+    [animationId, updateAnimationState, setError]
+  );
+
+  const handleContinuationVideoClear = useCallback(async () => {
+    if (!animation) return;
+    await applyAnimationPatch(
+      {
+        generationContinuationVideoUrl: null,
+        generationContinuationEnabled: false,
+      },
+      { success: "Continuation video cleared." }
+    );
+  }, [animation, applyAnimationPatch]);
 
   const handleGenerationLoopToggle = useCallback(
     async (nextValue: boolean) => {
@@ -798,15 +1000,45 @@ export default function AnimationDetailPage() {
   const durationOptions = getVideoSecondsOptions(generationModel);
   const supportsStartEnd = getVideoModelSupportsStartEnd(generationModel);
   const supportsLoop = getVideoModelSupportsLoop(generationModel);
-  const supportsContinuation = getVideoModelSupportsContinuation(generationModel);
   const supportsNegativePrompt = getVideoModelSupportsNegativePrompt(generationModel);
-  const continuationEnabled =
-    process.env.NEXT_PUBLIC_VEO_CONTINUATION_ENABLED === "true";
+  const supportsSeed = getVideoModelSupportsSeed(generationModel);
+  const supportsReferenceImages =
+    getVideoModelSupportsReferenceImages(generationModel);
+  const referenceImageLimit = getVideoModelReferenceImageLimit(generationModel);
+  const referenceConstraints =
+    getVideoModelReferenceConstraints(generationModel);
+  const supportsConcepts = getVideoModelSupportsConcepts(generationModel);
+  const conceptOptions = getVideoModelConceptOptions(generationModel);
+  const supportsEffect = getVideoModelSupportsEffect(generationModel);
+  const supportsAudio = getVideoModelSupportsAudio(generationModel);
+  const continuationEnabled = animation?.generationContinuationEnabled === true;
   const isToonCrafter = generationModel === "tooncrafter";
+  const isPikaframes = generationModel === "pikaframes";
+  const isWan = generationModel === "wan2.2";
+  const isVertexProvider = selectedProvider === "vertex";
+  const continuationVideoUrl =
+    typeof animation?.generationContinuationVideoUrl === "string"
+      ? animation.generationContinuationVideoUrl
+      : "";
   const generationNegativePrompt =
     typeof animation?.generationNegativePrompt === "string"
       ? animation.generationNegativePrompt
       : "";
+  const generationSeed =
+    typeof animation?.generationSeed === "number" ? animation.generationSeed : "";
+  const generationReferenceImageUrls = Array.isArray(
+    animation?.generationReferenceImageUrls
+  )
+    ? animation.generationReferenceImageUrls
+    : [];
+  const generationConcepts = Array.isArray(animation?.generationConcepts)
+    ? animation.generationConcepts
+    : [];
+  const generationEffect =
+    typeof animation?.generationEffect === "string"
+      ? animation.generationEffect
+      : "";
+  const effectActive = supportsEffect && generationEffect.trim().length > 0;
   const activeReference =
     character?.referenceImages?.find((img) => img.id === animation?.referenceImageId) ??
     character?.referenceImages?.find((img) => img.isPrimary) ??
@@ -819,9 +1051,17 @@ export default function AnimationDetailPage() {
     supportsStartEnd,
     durationOptions,
     isToonCrafter,
-    supportsContinuation,
-    continuationEnabled,
+    isPikaframes,
+    isWan,
   });
+  const pikaframesPlan = useMemo(() => {
+    if (!animation || !isPikaframes) return null;
+    const fpsValue = Number(animation.extractFps ?? animation.fps ?? 12);
+    return buildPikaframesPlan({
+      keyframes: Array.isArray(animation.keyframes) ? animation.keyframes : [],
+      fps: fpsValue,
+    });
+  }, [animation, isPikaframes]);
 
   if (isLoading) {
     return (
@@ -863,6 +1103,9 @@ export default function AnimationDetailPage() {
   const providerMatchesModel =
     providerValid && Boolean(modelProvider) && modelProvider === selectedProvider;
   const generationLoop = Boolean(animation.generationLoop);
+  const referenceImagesActive =
+    supportsReferenceImages && generationReferenceImageUrls.length > 0;
+  const endImageDisabled = generationLoop || referenceImagesActive || effectActive;
   const tooncrafterInterpolate = animation.tooncrafterInterpolate === true;
   const tooncrafterColorCorrection =
     typeof animation.tooncrafterColorCorrection === "boolean"
@@ -874,6 +1117,24 @@ export default function AnimationDetailPage() {
       ? animation.tooncrafterNegativePrompt
       : "";
   const tooncrafterEmptyPrompt = animation.tooncrafterEmptyPrompt === true;
+  const wanSeed = animation.wanSeed ?? "";
+  const wanNumInferenceSteps = animation.wanNumInferenceSteps ?? "";
+  const wanEnableSafetyChecker = animation.wanEnableSafetyChecker === true;
+  const wanEnableOutputSafetyChecker =
+    animation.wanEnableOutputSafetyChecker === true;
+  const wanEnablePromptExpansion = animation.wanEnablePromptExpansion === true;
+  const wanAcceleration = animation.wanAcceleration ?? "regular";
+  const wanGuidanceScale = animation.wanGuidanceScale ?? "";
+  const wanGuidanceScale2 = animation.wanGuidanceScale2 ?? "";
+  const wanShift = animation.wanShift ?? "";
+  const wanInterpolatorModel = animation.wanInterpolatorModel ?? "film";
+  const wanNumInterpolatedFrames = animation.wanNumInterpolatedFrames ?? "";
+  const wanAdjustFpsForInterpolation =
+    typeof animation.wanAdjustFpsForInterpolation === "boolean"
+      ? animation.wanAdjustFpsForInterpolation
+      : true;
+  const wanVideoQuality = animation.wanVideoQuality ?? "high";
+  const wanVideoWriteMode = animation.wanVideoWriteMode ?? "balanced";
   const promptProfile =
     animation.promptProfile ??
     getVideoModelPromptProfile(generationModel);
@@ -1078,7 +1339,11 @@ export default function AnimationDetailPage() {
                   {providerValid
                     ? selectedProvider === "openai"
                       ? "OpenAI"
-                      : "Replicate"
+                      : selectedProvider === "replicate"
+                      ? "Replicate"
+                      : selectedProvider === "fal"
+                      ? "Fal"
+                      : "Vertex AI"
                     : "Provider required"}
                 </span>
               </div>
@@ -1434,6 +1699,261 @@ export default function AnimationDetailPage() {
                   </p>
                 </div>
               )}
+
+              {supportsSeed && !isWan && !isToonCrafter && (
+                <div className="tech-border bg-card p-4 space-y-2">
+                  <p className="text-xs text-muted-foreground tracking-widest">Seed</p>
+                  <input
+                    type="number"
+                    value={generationSeed}
+                    onChange={(event) => {
+                      const raw = event.target.value;
+                      const nextSeed =
+                        raw.trim() === "" ? null : Number(raw);
+                      setAnimation({
+                        ...animation,
+                        generationSeed:
+                          typeof nextSeed === "number" && Number.isFinite(nextSeed)
+                            ? nextSeed
+                            : null,
+                      });
+                    }}
+                    placeholder="Random"
+                    className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                    disabled={isGenerationFrameSaving}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Leave blank for random.
+                  </p>
+                </div>
+              )}
+
+              {supportsReferenceImages && (
+                <div className="tech-border bg-card p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground tracking-widest">
+                      Reference Images
+                    </p>
+                    <span className="text-[10px] text-muted-foreground">
+                      {generationReferenceImageUrls.length}/
+                      {referenceImageLimit ?? 0}
+                    </span>
+                  </div>
+                  {referenceConstraints && (
+                    <p className="text-[10px] text-muted-foreground">
+                      Requires {referenceConstraints.aspectRatio} and{" "}
+                      {referenceConstraints.seconds}s. End frame is ignored.
+                    </p>
+                  )}
+                  <div className="space-y-2">
+                    <p className="text-[10px] text-muted-foreground tracking-widest">
+                      Character References
+                    </p>
+                    {character?.referenceImages?.length ? (
+                      <div className="grid grid-cols-4 gap-2">
+                        {character.referenceImages.map((ref) => {
+                          const isSelected =
+                            generationReferenceImageUrls.includes(ref.url);
+                          return (
+                            <button
+                              key={ref.id}
+                              type="button"
+                              onClick={() => {
+                                const selected = new Set(
+                                  generationReferenceImageUrls
+                                );
+                                if (selected.has(ref.url)) {
+                                  selected.delete(ref.url);
+                                } else {
+                                  if (
+                                    referenceImageLimit &&
+                                    selected.size >= referenceImageLimit
+                                  ) {
+                                    setError(
+                                      `Select up to ${referenceImageLimit} reference images.`
+                                    );
+                                    return;
+                                  }
+                                  selected.add(ref.url);
+                                }
+                                setAnimation({
+                                  ...animation,
+                                  generationReferenceImageUrls: Array.from(selected),
+                                });
+                              }}
+                              className={`border p-1 transition-colors ${
+                                isSelected
+                                  ? "border-primary"
+                                  : "border-border hover:border-primary/50"
+                              }`}
+                              disabled={isGenerationFrameSaving}
+                              title="Toggle reference"
+                            >
+                              <img
+                                src={ref.url}
+                                alt="Character reference"
+                                className="w-full aspect-square object-contain bg-muted/20"
+                              />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-muted-foreground">
+                        No character references available.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-[10px] text-muted-foreground tracking-widest">
+                      Animation References
+                    </p>
+                    {animation.references?.length ? (
+                      <div className="grid grid-cols-4 gap-2">
+                        {animation.references.map((ref) => {
+                          const isSelected =
+                            generationReferenceImageUrls.includes(ref.url);
+                          return (
+                            <button
+                              key={ref.id}
+                              type="button"
+                              onClick={() => {
+                                const selected = new Set(
+                                  generationReferenceImageUrls
+                                );
+                                if (selected.has(ref.url)) {
+                                  selected.delete(ref.url);
+                                } else {
+                                  if (
+                                    referenceImageLimit &&
+                                    selected.size >= referenceImageLimit
+                                  ) {
+                                    setError(
+                                      `Select up to ${referenceImageLimit} reference images.`
+                                    );
+                                    return;
+                                  }
+                                  selected.add(ref.url);
+                                }
+                                setAnimation({
+                                  ...animation,
+                                  generationReferenceImageUrls: Array.from(selected),
+                                });
+                              }}
+                              className={`border p-1 transition-colors ${
+                                isSelected
+                                  ? "border-primary"
+                                  : "border-border hover:border-primary/50"
+                              }`}
+                              disabled={isGenerationFrameSaving}
+                              title="Toggle reference"
+                            >
+                              <img
+                                src={ref.url}
+                                alt="Animation reference"
+                                className="w-full aspect-square object-contain bg-muted/20"
+                              />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-muted-foreground">
+                        No animation references uploaded.
+                      </p>
+                    )}
+                  </div>
+
+                  {generationReferenceImageUrls.length > 0 && (
+                    <button
+                      type="button"
+                      className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-destructive hover:text-destructive"
+                      onClick={() =>
+                        setAnimation({
+                          ...animation,
+                          generationReferenceImageUrls: [],
+                        })
+                      }
+                      disabled={isGenerationFrameSaving}
+                    >
+                      Clear references
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {supportsConcepts && conceptOptions.length > 0 && (
+                <div className="tech-border bg-card p-4 space-y-2">
+                  <p className="text-xs text-muted-foreground tracking-widest">
+                    Camera Concepts
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {conceptOptions.map((concept) => {
+                      const selected = generationConcepts.includes(concept);
+                      return (
+                        <label
+                          key={concept}
+                          className="flex items-center gap-2 text-[10px] text-muted-foreground cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() => {
+                              const next = selected
+                                ? generationConcepts.filter(
+                                    (item) => item !== concept
+                                  )
+                                : [...generationConcepts, concept];
+                              setAnimation({
+                                ...animation,
+                                generationConcepts: next,
+                              });
+                            }}
+                            className="w-3.5 h-3.5"
+                          />
+                          {concept.replace(/_/g, " ")}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {supportsEffect && (
+                <div className="tech-border bg-card p-4 space-y-2">
+                  <p className="text-xs text-muted-foreground tracking-widest">
+                    Effect
+                  </p>
+                  <input
+                    value={generationEffect}
+                    onChange={(event) => {
+                      const raw = event.target.value;
+                      setAnimation({
+                        ...animation,
+                        generationEffect: raw.trim() ? raw : null,
+                      });
+                    }}
+                    placeholder="Effect name (optional)"
+                    className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                    disabled={isGenerationFrameSaving}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    PixVerse effects disable the end frame.
+                  </p>
+                </div>
+              )}
+
+              {supportsAudio && (
+                <div className="tech-border bg-card p-4 space-y-2">
+                  <p className="text-xs text-muted-foreground tracking-widest">
+                    Audio
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Audio generation is disabled for character animation.
+                  </p>
+                </div>
+              )}
               <div className="tech-border bg-card p-4 space-y-2">
                 <p className="text-xs text-muted-foreground tracking-widest">Provider</p>
                 <select
@@ -1442,7 +1962,10 @@ export default function AnimationDetailPage() {
                     if (!animation) return;
                     const rawProvider = event.target.value;
                     const provider =
-                      rawProvider === "openai" || rawProvider === "replicate"
+                      rawProvider === "openai" ||
+                      rawProvider === "replicate" ||
+                      rawProvider === "fal" ||
+                      rawProvider === "vertex"
                         ? rawProvider
                         : undefined;
                     if (!provider) {
@@ -1548,7 +2071,98 @@ export default function AnimationDetailPage() {
                     keyframe dimensions.
                   </p>
                 )}
+                {isPikaframes && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Uses 2-5 timeline keyframes and derives transition timing from frame spacing.
+                    Total transition time must stay under 25s.
+                  </p>
+                )}
+                {isWan && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Uses the start/end frames panel. Intermediate timeline keyframes are ignored.
+                  </p>
+                )}
               </div>
+
+              {isVertexProvider && (
+                <div className="tech-border bg-card p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground tracking-widest">
+                      Vertex Continuation
+                    </p>
+                    <span
+                      className={`text-[10px] ${
+                        continuationEnabled ? "text-success" : "text-muted-foreground"
+                      }`}
+                    >
+                      {continuationEnabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={continuationEnabled}
+                      onChange={(e) => {
+                        if (!animation) return;
+                        setAnimation({
+                          ...animation,
+                          generationContinuationEnabled: e.target.checked,
+                        });
+                      }}
+                      className="form-checkbox"
+                      disabled={isContinuationVideoSaving}
+                    />
+                    Continue from uploaded video
+                  </label>
+                  <p className="text-[10px] text-muted-foreground">
+                    Upload an MP4 clip (1-30s, 24 FPS, 720p or 1080p). The input
+                    is normalized before sending to Vertex.
+                  </p>
+                  {continuationEnabled && (
+                    <div className="space-y-2">
+                      {continuationVideoUrl ? (
+                        <video
+                          src={continuationVideoUrl}
+                          controls
+                          className="w-full h-28 object-contain border border-border bg-muted/20"
+                        />
+                      ) : (
+                        <p className="text-[10px] text-muted-foreground">
+                          No continuation video uploaded yet.
+                        </p>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="file"
+                          accept="video/mp4"
+                          className="text-[10px] text-muted-foreground"
+                          disabled={isContinuationVideoSaving}
+                          onChange={(e) =>
+                            void handleContinuationVideoUpload(
+                              e.target.files?.[0] ?? null
+                            )
+                          }
+                        />
+                        {continuationVideoUrl && (
+                          <button
+                            type="button"
+                            className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-destructive hover:text-destructive"
+                            disabled={isContinuationVideoSaving}
+                            onClick={() => void handleContinuationVideoClear()}
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                      {!continuationVideoUrl && (
+                        <p className="text-[10px] text-destructive">
+                          Upload an MP4 to enable generation.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="tech-border bg-card p-4 space-y-2">
                 <p className="text-xs text-muted-foreground tracking-widest">Prompt Profile</p>
@@ -1715,7 +2329,366 @@ export default function AnimationDetailPage() {
                 </div>
               )}
 
-              {!isToonCrafter && (
+              {isWan && (
+                <div className="tech-border bg-card p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground tracking-widest">
+                      Wan 2.2 Options
+                    </p>
+                    <span className="text-[10px] text-primary">Fal</span>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-muted-foreground tracking-widest">
+                      Seed
+                    </p>
+                    <input
+                      type="number"
+                      value={wanSeed}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const nextSeed =
+                          raw.trim() === "" ? null : Number(raw);
+                        setAnimation({
+                          ...animation,
+                          wanSeed:
+                            typeof nextSeed === "number" &&
+                            Number.isFinite(nextSeed)
+                              ? nextSeed
+                              : null,
+                        });
+                      }}
+                      placeholder="Random"
+                      className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                      disabled={isGenerationFrameSaving}
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Leave blank for random.
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowWanAdvanced((prev) => !prev)}
+                    className="text-[10px] text-primary hover:underline uppercase tracking-widest"
+                  >
+                    {showWanAdvanced ? "- Hide Advanced" : "+ Show Advanced"}
+                  </button>
+
+                  {showWanAdvanced && (
+                    <div className="space-y-4 pt-2 border-t border-border">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs text-muted-foreground mb-1">
+                            Num Inference Steps
+                          </label>
+                          <input
+                            type="number"
+                            min={2}
+                            max={40}
+                            value={wanNumInferenceSteps}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const next =
+                                raw.trim() === "" ? null : Number(raw);
+                              setAnimation({
+                                ...animation,
+                                wanNumInferenceSteps:
+                                  typeof next === "number" && Number.isFinite(next)
+                                    ? next
+                                    : null,
+                              });
+                            }}
+                            placeholder="Default 27"
+                            className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                            disabled={isGenerationFrameSaving}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-muted-foreground mb-1">
+                            Acceleration
+                          </label>
+                          <select
+                            value={wanAcceleration}
+                            onChange={(e) => {
+                              const value =
+                                e.target.value === "none" ? "none" : "regular";
+                              setAnimation({
+                                ...animation,
+                                wanAcceleration: value,
+                              });
+                            }}
+                            className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                            disabled={isGenerationFrameSaving}
+                          >
+                            <option value="regular">regular</option>
+                            <option value="none">none</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs text-muted-foreground mb-1">
+                            Guidance Scale
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={10}
+                            step={0.1}
+                            value={wanGuidanceScale}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const next =
+                                raw.trim() === "" ? null : Number(raw);
+                              setAnimation({
+                                ...animation,
+                                wanGuidanceScale:
+                                  typeof next === "number" && Number.isFinite(next)
+                                    ? next
+                                    : null,
+                              });
+                            }}
+                            placeholder="Default 3.5"
+                            className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                            disabled={isGenerationFrameSaving}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-muted-foreground mb-1">
+                            Guidance Scale 2
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={10}
+                            step={0.1}
+                            value={wanGuidanceScale2}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const next =
+                                raw.trim() === "" ? null : Number(raw);
+                              setAnimation({
+                                ...animation,
+                                wanGuidanceScale2:
+                                  typeof next === "number" && Number.isFinite(next)
+                                    ? next
+                                    : null,
+                              });
+                            }}
+                            placeholder="Default 3.5"
+                            className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                            disabled={isGenerationFrameSaving}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs text-muted-foreground mb-1">
+                            Shift
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={10}
+                            step={0.1}
+                            value={wanShift}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const next =
+                                raw.trim() === "" ? null : Number(raw);
+                              setAnimation({
+                                ...animation,
+                                wanShift:
+                                  typeof next === "number" && Number.isFinite(next)
+                                    ? next
+                                    : null,
+                              });
+                            }}
+                            placeholder="Default 5"
+                            className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                            disabled={isGenerationFrameSaving}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-muted-foreground mb-1">
+                            Interpolator Model
+                          </label>
+                          <select
+                            value={wanInterpolatorModel}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              const next =
+                                value === "none" || value === "rife"
+                                  ? value
+                                  : "film";
+                              setAnimation({
+                                ...animation,
+                                wanInterpolatorModel: next,
+                              });
+                            }}
+                            className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                            disabled={isGenerationFrameSaving}
+                          >
+                            <option value="film">film</option>
+                            <option value="none">none</option>
+                            <option value="rife">rife</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs text-muted-foreground mb-1">
+                            Num Interpolated Frames
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={4}
+                            value={wanNumInterpolatedFrames}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const next =
+                                raw.trim() === "" ? null : Number(raw);
+                              setAnimation({
+                                ...animation,
+                                wanNumInterpolatedFrames:
+                                  typeof next === "number" && Number.isFinite(next)
+                                    ? next
+                                    : null,
+                              });
+                            }}
+                            placeholder="Default 1"
+                            className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                            disabled={isGenerationFrameSaving}
+                          />
+                        </div>
+                        <div className="flex items-center gap-2 text-xs mt-6">
+                          <input
+                            type="checkbox"
+                            checked={wanAdjustFpsForInterpolation}
+                            onChange={(e) =>
+                              setAnimation({
+                                ...animation,
+                                wanAdjustFpsForInterpolation: e.target.checked,
+                              })
+                            }
+                            className="form-checkbox"
+                            disabled={isGenerationFrameSaving}
+                          />
+                          Adjust FPS for interpolation
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="flex items-center gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={wanEnableSafetyChecker}
+                            onChange={(e) =>
+                              setAnimation({
+                                ...animation,
+                                wanEnableSafetyChecker: e.target.checked,
+                              })
+                            }
+                            className="form-checkbox"
+                            disabled={isGenerationFrameSaving}
+                          />
+                          Enable Safety Checker
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={wanEnableOutputSafetyChecker}
+                            onChange={(e) =>
+                              setAnimation({
+                                ...animation,
+                                wanEnableOutputSafetyChecker: e.target.checked,
+                              })
+                            }
+                            className="form-checkbox"
+                            disabled={isGenerationFrameSaving}
+                          />
+                          Enable Output Safety Checker
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={wanEnablePromptExpansion}
+                          onChange={(e) =>
+                            setAnimation({
+                              ...animation,
+                              wanEnablePromptExpansion: e.target.checked,
+                            })
+                          }
+                          className="form-checkbox"
+                          disabled={isGenerationFrameSaving}
+                        />
+                        Enable Prompt Expansion
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs text-muted-foreground mb-1">
+                            Video Quality
+                          </label>
+                          <select
+                            value={wanVideoQuality}
+                            onChange={(e) =>
+                              setAnimation({
+                                ...animation,
+                                wanVideoQuality:
+                                  e.target.value === "low" ||
+                                  e.target.value === "medium" ||
+                                  e.target.value === "maximum"
+                                    ? e.target.value
+                                    : "high",
+                              })
+                            }
+                            className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                            disabled={isGenerationFrameSaving}
+                          >
+                            <option value="low">low</option>
+                            <option value="medium">medium</option>
+                            <option value="high">high</option>
+                            <option value="maximum">maximum</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-muted-foreground mb-1">
+                            Video Write Mode
+                          </label>
+                          <select
+                            value={wanVideoWriteMode}
+                            onChange={(e) =>
+                              setAnimation({
+                                ...animation,
+                                wanVideoWriteMode:
+                                  e.target.value === "fast" ||
+                                  e.target.value === "small"
+                                    ? e.target.value
+                                    : "balanced",
+                              })
+                            }
+                            className="terminal-input w-full h-9 px-3 text-sm bg-card"
+                            disabled={isGenerationFrameSaving}
+                          >
+                            <option value="fast">fast</option>
+                            <option value="balanced">balanced</option>
+                            <option value="small">small</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!isToonCrafter && !isPikaframes && (
                 <div className="tech-border bg-card p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <p className="text-xs text-muted-foreground tracking-widest">
@@ -1758,9 +2731,9 @@ export default function AnimationDetailPage() {
                         <p className="text-[10px] text-muted-foreground tracking-widest">
                           Start Frame
                         </p>
-                        {animation.generationStartImageUrl ? (
+                        {generationStartPreview || animation.generationStartImageUrl ? (
                           <img
-                            src={animation.generationStartImageUrl}
+                            src={generationStartPreview ?? animation.generationStartImageUrl}
                             alt="Start frame"
                             className="w-full h-24 object-contain border border-border bg-muted/20"
                           />
@@ -1819,23 +2792,25 @@ export default function AnimationDetailPage() {
                         <p className="text-[10px] text-muted-foreground tracking-widest">
                           End Frame
                         </p>
-                        {generationLoop ? (
-                          <p className="text-[10px] text-muted-foreground">
-                            Using start frame.
-                          </p>
-                        ) : animation.generationEndImageUrl ? (
+                        {!endImageDisabled && (generationEndPreview || animation.generationEndImageUrl) ? (
                           <img
-                            src={animation.generationEndImageUrl}
+                            src={generationEndPreview ?? animation.generationEndImageUrl}
                             alt="End frame"
                             className="w-full h-24 object-contain border border-border bg-muted/20"
                           />
                         ) : (
                           <p className="text-[10px] text-muted-foreground">
-                            Optional end frame for interpolation.
+                            {generationLoop
+                              ? "Using start frame."
+                              : referenceImagesActive
+                              ? "End frame ignored when reference images are used."
+                              : effectActive
+                              ? "End frame disabled when effect is set."
+                              : "Optional end frame for interpolation."}
                           </p>
                         )}
                         <div className="flex items-center gap-2">
-                          {activeReference && !generationLoop && (
+                          {activeReference && !endImageDisabled && (
                             <button
                               type="button"
                               className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary/60 hover:text-primary"
@@ -1853,7 +2828,7 @@ export default function AnimationDetailPage() {
                               Use active reference
                             </button>
                           )}
-                          {animation.generationEndImageUrl && !generationLoop && (
+                          {animation.generationEndImageUrl && !endImageDisabled && (
                             <button
                               type="button"
                               className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-destructive hover:text-destructive"
@@ -1873,7 +2848,7 @@ export default function AnimationDetailPage() {
                           type="file"
                           accept="image/*"
                           className="text-[10px] text-muted-foreground"
-                          disabled={isGenerationFrameSaving || generationLoop}
+                          disabled={isGenerationFrameSaving || endImageDisabled}
                           onChange={(e) =>
                             void handleGenerationFrameUpload(
                               "end",
@@ -2030,7 +3005,7 @@ export default function AnimationDetailPage() {
                       })}
                     </div>
                     <p className="text-[10px] text-muted-foreground">
-                      Video generation uses a single reference image. Choose which ref to send.
+                      Video generation uses a single reference image unless reference image mode is active.
                     </p>
                   </div>
                 ) : (
@@ -2044,9 +3019,15 @@ export default function AnimationDetailPage() {
               <ModelConstraints
                 generationSize={String(animation.generationSize ?? "1024x1792")}
                 generationModel={String(animation.generationModel ?? "sora-2")}
-                onSizeChange={(size) =>
-                  setAnimation({ ...animation, generationSize: size })
-                }
+                onSizeChange={(size) => {
+                  if (referenceImagesActive && referenceConstraints) {
+                    setError(
+                      `Reference images require ${referenceConstraints.aspectRatio} and ${referenceConstraints.seconds}s.`
+                    );
+                    return;
+                  }
+                  setAnimation({ ...animation, generationSize: size });
+                }}
                 frameWidth={Number(animation.frameWidth ?? animation.spriteSize ?? 253)}
                 frameHeight={Number(animation.frameHeight ?? animation.spriteSize ?? 504)}
               />
@@ -2100,109 +3081,166 @@ export default function AnimationDetailPage() {
                 )}
               </div>
 
-              {/* Generation queue */}
-              <div className="tech-border bg-card p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs text-muted-foreground tracking-widest">Generation Queue</p>
-                  <span className="text-[10px] text-muted-foreground">
-                    {generationQueue.length
-                      ? `${generationQueue.length} segment${generationQueue.length === 1 ? "" : "s"}`
-                      : "Idle"}
-                  </span>
-                </div>
-                {generationQueue.length > 0 ? (
-                  <div className="space-y-2">
-                    {generationQueue.map((item, index) => (
-                      <div
-                        key={item.id}
-                        className="border border-border/60 bg-background/40 p-2 text-[10px] space-y-2"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">
-                            Segment {index + 1}
-                          </span>
-                          <span
-                            className={
-                              item.status === "completed"
-                                ? "text-success"
-                                : item.status === "failed"
-                                ? "text-destructive"
-                                : item.status === "in_progress"
-                                ? "text-warning"
-                                : "text-muted-foreground"
-                            }
+              {isPikaframes ? (
+                <div className="tech-border bg-card p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground tracking-widest">Pikaframes Plan</p>
+                    <span className="text-[10px] text-muted-foreground">
+                      {pikaframesPlan?.keyframes.length ?? 0} keyframe{(pikaframesPlan?.keyframes.length ?? 0) === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  {pikaframesPlan && pikaframesPlan.keyframes.length > 0 ? (
+                    <>
+                      <div className="flex flex-wrap gap-2">
+                        {pikaframesPlan.keyframes.map((frame) => (
+                          <div
+                            key={`${frame.frameIndex}-${frame.image}`}
+                            className="border border-border bg-card p-1"
                           >
-                            {item.status.replace("_", " ")}
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <span className="text-muted-foreground">Frames</span>{" "}
-                            {item.startFrame}-{item.endFrame} ({item.targetFrameCount})
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Duration</span>{" "}
-                            {item.durationSeconds}s
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Model</span>{" "}
-                            {getVideoModelLabel(item.model)}
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Provider</span>{" "}
-                            {item.provider}
-                          </div>
-                        </div>
-                        {(item.startImageUrl || item.endImageUrl) && (
-                          <div className="flex gap-3">
-                            {item.startImageUrl && (
-                              <div className="space-y-1">
-                                <p className="text-[9px] text-muted-foreground">Start</p>
-                                <img
-                                  src={item.startImageUrl}
-                                  alt="Start frame"
-                                  className="w-12 h-12 object-contain border border-border bg-muted/20"
-                                />
+                            {frame.image ? (
+                              <img
+                                src={frame.image}
+                                alt={`Keyframe ${frame.frameIndex}`}
+                                className="w-12 h-12 object-contain"
+                              />
+                            ) : (
+                              <div className="w-12 h-12 flex items-center justify-center text-[9px] text-muted-foreground">
+                                {frame.frameIndex}
                               </div>
                             )}
-                            {item.endImageUrl && (
-                              <div className="space-y-1">
-                                <p className="text-[9px] text-muted-foreground">End</p>
-                                <img
-                                  src={item.endImageUrl}
-                                  alt="End frame"
-                                  className="w-12 h-12 object-contain border border-border bg-muted/20"
-                                />
-                              </div>
-                            )}
+                            <div className="text-[9px] text-muted-foreground text-center mt-1">
+                              Frame {frame.frameIndex}
+                            </div>
                           </div>
-                        )}
-                        {item.error && (
-                          <p className="text-[10px] text-destructive">{item.error}</p>
-                        )}
+                        ))}
                       </div>
-                    ))}
+                      <div className="space-y-2">
+                        {pikaframesPlan.transitions.map((transition) => (
+                          <div
+                            key={`${transition.startFrame}-${transition.endFrame}`}
+                            className="border border-border/60 bg-background/40 p-2 text-[10px] flex items-center justify-between"
+                          >
+                            <span>
+                              Frames {transition.startFrame} &rarr; {transition.endFrame}
+                            </span>
+                            <span>{transition.durationSeconds.toFixed(2)}s</span>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        Total duration: {pikaframesPlan.totalDuration.toFixed(2)}s (max 25s).
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Add at least two keyframes with images to build transitions.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="tech-border bg-card p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground tracking-widest">Generation Queue</p>
+                    <span className="text-[10px] text-muted-foreground">
+                      {generationQueue.length
+                        ? `${generationQueue.length} segment${generationQueue.length === 1 ? "" : "s"}`
+                        : "Idle"}
+                    </span>
                   </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    No queued segments. Add keyframes to generate in chunks.
-                  </p>
-                )}
-                {generationPlan.errors.length > 0 && (
-                  <div className="border border-destructive/40 bg-destructive/5 p-2 text-[10px] text-destructive space-y-1">
-                    {generationPlan.errors.map((err) => (
-                      <p key={err}>{err}</p>
-                    ))}
-                  </div>
-                )}
-                {generationPlan.warnings.length > 0 && (
-                  <div className="border border-border bg-muted/20 p-2 text-[10px] text-warning space-y-1">
-                    {generationPlan.warnings.map((warning) => (
-                      <p key={warning}>{warning}</p>
-                    ))}
-                  </div>
-                )}
-              </div>
+                  {generationQueue.length > 0 ? (
+                    <div className="space-y-2">
+                      {generationQueue.map((item, index) => (
+                        <div
+                          key={item.id}
+                          className="border border-border/60 bg-background/40 p-2 text-[10px] space-y-2"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-muted-foreground">
+                              Segment {index + 1}
+                            </span>
+                            <span
+                              className={
+                                item.status === "completed"
+                                  ? "text-success"
+                                  : item.status === "failed"
+                                  ? "text-destructive"
+                                  : item.status === "in_progress"
+                                  ? "text-warning"
+                                  : "text-muted-foreground"
+                              }
+                            >
+                              {item.status.replace("_", " ")}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <span className="text-muted-foreground">Frames</span>{" "}
+                              {item.startFrame}-{item.endFrame} ({item.targetFrameCount})
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Duration</span>{" "}
+                              {item.durationSeconds}s
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Model</span>{" "}
+                              {getVideoModelLabel(item.model)}
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Provider</span>{" "}
+                              {item.provider}
+                            </div>
+                          </div>
+                          {(item.startImageUrl || item.endImageUrl) && (
+                            <div className="flex gap-3">
+                              {item.startImageUrl && (
+                                <div className="space-y-1">
+                                  <p className="text-[9px] text-muted-foreground">Start</p>
+                                  <img
+                                    src={item.startImageUrl}
+                                    alt="Start frame"
+                                    className="w-12 h-12 object-contain border border-border bg-muted/20"
+                                  />
+                                </div>
+                              )}
+                              {item.endImageUrl && (
+                                <div className="space-y-1">
+                                  <p className="text-[9px] text-muted-foreground">End</p>
+                                  <img
+                                    src={item.endImageUrl}
+                                    alt="End frame"
+                                    className="w-12 h-12 object-contain border border-border bg-muted/20"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {item.error && (
+                            <p className="text-[10px] text-destructive">{item.error}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      No queued segments. Add keyframes to generate in chunks.
+                    </p>
+                  )}
+                </div>
+              )}
+              {generationPlan.errors.length > 0 && (
+                <div className="border border-destructive/40 bg-destructive/5 p-2 text-[10px] text-destructive space-y-1">
+                  {generationPlan.errors.map((err) => (
+                    <p key={err}>{err}</p>
+                  ))}
+                </div>
+              )}
+              {generationPlan.warnings.length > 0 && (
+                <div className="border border-border bg-muted/20 p-2 text-[10px] text-warning space-y-1">
+                  {generationPlan.warnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
           )}

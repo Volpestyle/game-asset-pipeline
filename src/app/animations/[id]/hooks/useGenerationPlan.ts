@@ -1,5 +1,11 @@
 import { useMemo } from "react";
-import { getVideoModelLabel } from "@/components/animation";
+import {
+  getVideoAspectRatio,
+  getVideoModelLabel,
+  getVideoModelReferenceConstraints,
+  getVideoModelSupportsReferenceImages,
+} from "@/components/animation";
+import { buildPikaframesPlan } from "@/lib/ai/pikaframes";
 import type { Animation } from "@/types";
 import type { GenerationPlan, GenerationPlanSegment, PlanAnchor } from "../types";
 
@@ -10,8 +16,8 @@ type GenerationPlanOptions = {
   supportsStartEnd: boolean;
   durationOptions: number[];
   isToonCrafter: boolean;
-  supportsContinuation: boolean;
-  continuationEnabled: boolean;
+  isPikaframes: boolean;
+  isWan: boolean;
 };
 
 export function useGenerationPlan(options: GenerationPlanOptions): GenerationPlan {
@@ -22,13 +28,54 @@ export function useGenerationPlan(options: GenerationPlanOptions): GenerationPla
     supportsStartEnd,
     durationOptions,
     isToonCrafter,
-    supportsContinuation,
-    continuationEnabled,
+    isPikaframes,
+    isWan,
   } = options;
 
   return useMemo(() => {
     if (!animation || isToonCrafter) {
       return { mode: "single", segments: [], errors: [], warnings: [] };
+    }
+
+    if (isPikaframes) {
+      const fpsRaw = Number(animation.extractFps ?? animation.fps ?? 6);
+      const plan = buildPikaframesPlan({
+        keyframes: Array.isArray(animation.keyframes) ? animation.keyframes : [],
+        fps: fpsRaw,
+      });
+      return {
+        mode: "single",
+        segments: [],
+        errors: plan.errors,
+        warnings: plan.warnings,
+      };
+    }
+
+    if (isWan) {
+      const errors: string[] = [];
+      const warnings: string[] = [];
+      const fpsRaw = Number(animation.extractFps ?? animation.fps ?? 6);
+      if (!Number.isFinite(fpsRaw) || fpsRaw <= 0) {
+        errors.push("Invalid FPS value. Select a valid extract FPS.");
+      }
+      const frameCount = Math.max(
+        1,
+        Number(animation.frameCount ?? expectedFrameCount)
+      );
+      const lastFrameIndex = Math.max(0, frameCount - 1);
+      const keyframes = Array.isArray(animation.keyframes) ? animation.keyframes : [];
+      const keyframesWithImages = keyframes.filter(
+        (kf) => typeof kf.image === "string" && kf.image.trim().length > 0
+      );
+      const intermediateKeyframes = keyframesWithImages.filter(
+        (kf) => kf.frameIndex !== 0 && kf.frameIndex !== lastFrameIndex
+      );
+      if (intermediateKeyframes.length > 0) {
+        warnings.push(
+          "Wan 2.2 only uses start/end frames. Intermediate keyframes are ignored."
+        );
+      }
+      return { mode: "single", segments: [], errors, warnings };
     }
 
     const errors: string[] = [];
@@ -41,7 +88,35 @@ export function useGenerationPlan(options: GenerationPlanOptions): GenerationPla
 
     const frameCount = Math.max(1, Number(animation.frameCount ?? expectedFrameCount));
     const lastFrameIndex = Math.max(0, frameCount - 1);
-    const modelLabel = getVideoModelLabel(String(animation.generationModel ?? "sora-2"));
+    const modelId = String(animation.generationModel ?? "sora-2");
+    const modelLabel = getVideoModelLabel(modelId);
+    const supportsReferenceImages = getVideoModelSupportsReferenceImages(modelId);
+    const referenceConstraints = getVideoModelReferenceConstraints(modelId);
+    const referenceImages = Array.isArray(animation.generationReferenceImageUrls)
+      ? animation.generationReferenceImageUrls
+      : [];
+    const hasReferenceImages =
+      supportsReferenceImages && referenceImages.length > 0;
+    if (hasReferenceImages && referenceConstraints) {
+      const generationSeconds = Number(animation.generationSeconds ?? 0);
+      if (
+        Number.isFinite(referenceConstraints.seconds) &&
+        generationSeconds !== referenceConstraints.seconds
+      ) {
+        errors.push(
+          `${modelLabel} reference images require ${referenceConstraints.seconds}s duration.`
+        );
+      }
+      const generationSize = String(animation.generationSize ?? "");
+      if (
+        referenceConstraints.aspectRatio &&
+        getVideoAspectRatio(generationSize) !== referenceConstraints.aspectRatio
+      ) {
+        errors.push(
+          `${modelLabel} reference images require ${referenceConstraints.aspectRatio} aspect ratio.`
+        );
+      }
+    }
 
     const keyframes = Array.isArray(animation.keyframes) ? animation.keyframes : [];
     const keyframesWithImages = keyframes
@@ -88,17 +163,17 @@ export function useGenerationPlan(options: GenerationPlanOptions): GenerationPla
       );
     }
 
+    if (hasReferenceImages && (endImageUrl || hasKeyframeAnchors)) {
+      warnings.push(
+        `${modelLabel} ignores end frames when reference images are used.`
+      );
+    }
+
     if (hasKeyframeAnchors && String(animation.loopMode ?? "loop") === "pingpong") {
       warnings.push(
         "Ping-pong output is disabled for keyframe segments to keep frame timing aligned."
       );
     }
-    if (continuationEnabled && supportsContinuation && hasKeyframeAnchors) {
-      warnings.push(
-        "Veo continuation is enabled. End frames are ignored after the first segment."
-      );
-    }
-
     const anchors: PlanAnchor[] = [];
     if (startImageUrl) {
       anchors.push({
@@ -229,5 +304,7 @@ export function useGenerationPlan(options: GenerationPlanOptions): GenerationPla
     supportsStartEnd,
     durationOptions,
     isToonCrafter,
+    isPikaframes,
+    isWan,
   ]);
 }
