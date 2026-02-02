@@ -9,11 +9,14 @@ import {
 } from "@/lib/ai/openai";
 import { logger } from "@/lib/logger";
 import { getShutdownSignal } from "@/lib/shutdown";
-import { ensureDir, storagePath } from "@/lib/storage";
+import { ensureDir, fileExists, storagePath, storagePathFromUrl } from "@/lib/storage";
 import { appendStudioHistoryEntry } from "@/lib/studioHistory";
 import {
   runPikaframes,
   runWanVideo,
+  runGrokImagineVideo,
+  runGrokImagineEditVideo,
+  type GrokImagineEditResolution,
   type PikaframesTransitionInput,
 } from "@/lib/ai/fal";
 import {
@@ -23,12 +26,16 @@ import {
   WAN_DEFAULT_FPS,
 } from "@/lib/ai/wan";
 import {
+  clampGrokImagineDuration,
+  getGrokImagineAspectRatio,
+  getGrokImagineResolution,
+} from "@/lib/ai/grokImagine";
+import { resolveFalMediaUrlFromPath } from "@/lib/ai/falMedia";
+import { parseDataUrl } from "@/lib/dataUrl";
+import {
   coerceVideoSecondsForModel,
   coerceVideoSizeForModel,
   getVideoModelConfig,
-  getVideoModelReferenceConstraints,
-  getVideoModelReferenceImageLimit,
-  getVideoModelSupportsReferenceImages,
   getReplicateModelForVideo,
   getVideoAspectRatio,
   getVideoResolution,
@@ -48,12 +55,15 @@ import type {
   ToonCrafterParameters,
   StudioImageParameters,
   WanParameters,
+  GrokImagineEditParameters,
   StudioHistoryEntry,
 } from "@/types/studio";
 
 export const runtime = "nodejs";
 
 type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+type GrokImagineParameters = StudioVideoParameters & { startImage: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -106,6 +116,59 @@ function parseOptionalNumber(value: unknown): number | undefined {
 
 function parseOptionalBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function requireStartImage(
+  params: StudioVideoParameters,
+  modelLabel: string
+): ParseResult<GrokImagineParameters> {
+  if (!params.startImage) {
+    return { ok: false, error: `${modelLabel} requires a start image.` };
+  }
+  return { ok: true, value: { ...params, startImage: params.startImage } };
+}
+
+function isAbsoluteUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+async function saveBase64Video(base64: string, outputPath: string) {
+  const parsed = parseDataUrl(base64);
+  if (!parsed) {
+    throw new Error("Invalid base64 video format.");
+  }
+  if (!parsed.mime.startsWith("video/")) {
+    throw new Error("Unsupported video MIME type.");
+  }
+  const buffer = Buffer.from(parsed.data, "base64");
+  await fs.writeFile(outputPath, buffer);
+}
+
+function parseGrokImagineEditParameters(
+  value: Record<string, unknown>
+): ParseResult<GrokImagineEditParameters> {
+  const promptResult = parseRequiredString(value.prompt, "prompt");
+  if (!promptResult.ok) return promptResult;
+  const videoResult = parseRequiredString(value.video, "video");
+  if (!videoResult.ok) return videoResult;
+
+  const resolutionCandidate =
+    typeof value.resolution === "string" ? value.resolution.trim() : "";
+  const resolution: GrokImagineEditResolution | undefined =
+    resolutionCandidate === "auto" ||
+    resolutionCandidate === "480p" ||
+    resolutionCandidate === "720p"
+      ? resolutionCandidate
+      : undefined;
+
+  const params: GrokImagineEditParameters = {
+    prompt: promptResult.value,
+    video: videoResult.value,
+  };
+  if (resolution) {
+    params.resolution = resolution;
+  }
+  return { ok: true, value: params };
 }
 
 function parseRequiredStringArray(
@@ -992,6 +1055,131 @@ async function generateWanVideo(
   return downloadStudioVideo({ outputUrl, prefix: "wan2.2" });
 }
 
+async function generateGrokImagine(
+  modelId: VideoModelId,
+  params: GrokImagineParameters
+): Promise<{ videoUrl: string }> {
+  const modelConfig = getVideoModelConfig(modelId);
+  if (modelConfig.provider !== "fal") {
+    throw new Error(`Model ${modelId} is not configured for Fal.`);
+  }
+
+  const resolved = resolveStudioVideoInputs({
+    modelId,
+    size: params.size,
+    seconds: params.seconds,
+    context: "Grok Imagine",
+  });
+  const resolvedSize = resolved.size;
+  const durationClamp = clampGrokImagineDuration(resolved.seconds);
+  if (durationClamp.clamped) {
+    logger.warn("Grok Imagine duration clamped", {
+      modelId,
+      requested: resolved.seconds,
+      clamped: durationClamp.seconds,
+    });
+  }
+
+  const resolution = getGrokImagineResolution(resolvedSize);
+  const aspectRatio = getGrokImagineAspectRatio(resolvedSize);
+
+  logger.info("Grok Imagine studio request", {
+    modelId,
+    duration: durationClamp.seconds,
+    resolution,
+    aspectRatio,
+  });
+
+  const result = await runGrokImagineVideo({
+    prompt: params.prompt,
+    image_url: params.startImage,
+    duration: durationClamp.seconds,
+    aspect_ratio: aspectRatio,
+    resolution,
+  });
+  const outputUrl = result.video?.url;
+  if (!outputUrl) {
+    throw new Error("No video returned from Grok Imagine.");
+  }
+
+  return downloadStudioVideo({ outputUrl, prefix: "grok-imagine" });
+}
+
+async function generateGrokImagineEdit(
+  modelId: VideoModelId,
+  params: GrokImagineEditParameters
+): Promise<{ videoUrl: string }> {
+  const modelConfig = getVideoModelConfig(modelId);
+  if (modelConfig.provider !== "fal") {
+    throw new Error(`Model ${modelId} is not configured for Fal.`);
+  }
+
+  const studioDir = storagePath("studio");
+  await ensureDir(studioDir);
+  const timestamp = Date.now();
+  const assetBaseUrl = process.env.FAL_ASSET_BASE_URL?.trim();
+
+  const rawVideo = params.video.trim();
+  if (!rawVideo) {
+    throw new Error("Grok Imagine Edit requires an input video.");
+  }
+
+  let inputVideoUrl: string;
+  if (rawVideo.startsWith("data:")) {
+    const inputPath = path.join(studioDir, `grok_edit_input_${timestamp}.mp4`);
+    await saveBase64Video(rawVideo, inputPath);
+    const resolved = await resolveFalMediaUrlFromPath({
+      mediaPath: inputPath,
+      assetBaseUrl,
+    });
+    if (assetBaseUrl && resolved.source === "data") {
+      logger.warn("Grok Imagine Edit using data URL input", {
+        modelId,
+        reason: "asset_base_unavailable",
+      });
+    }
+    inputVideoUrl = resolved.url;
+  } else if (isAbsoluteUrl(rawVideo)) {
+    inputVideoUrl = rawVideo;
+  } else {
+    const localPath = storagePathFromUrl(rawVideo);
+    if (!localPath) {
+      throw new Error("Invalid input video path.");
+    }
+    if (!(await fileExists(localPath))) {
+      throw new Error("Input video not found.");
+    }
+    const resolved = await resolveFalMediaUrlFromPath({
+      mediaPath: localPath,
+      assetBaseUrl,
+    });
+    if (assetBaseUrl && resolved.source === "data") {
+      logger.warn("Grok Imagine Edit using data URL input", {
+        modelId,
+        reason: "asset_base_unavailable",
+      });
+    }
+    inputVideoUrl = resolved.url;
+  }
+
+  logger.info("Grok Imagine Edit studio request", {
+    modelId,
+    resolution: params.resolution ?? "auto",
+  });
+
+  const result = await runGrokImagineEditVideo({
+    prompt: params.prompt,
+    video_url: inputVideoUrl,
+    resolution: params.resolution,
+  });
+  const outputUrl = result.video?.url;
+  if (!outputUrl) {
+    throw new Error("No video returned from Grok Imagine Edit.");
+  }
+
+  return downloadStudioVideo({ outputUrl, prefix: "grok-imagine-edit" });
+}
+
 async function generateToonCrafter(
   params: ToonCrafterParameters
 ): Promise<{ videoUrl: string }> {
@@ -1348,6 +1536,28 @@ export async function POST(request: Request) {
             return Response.json({ error: parsed.error }, { status: 400 });
           }
           const result = await generateWanVideo(modelId, parsed.value);
+          await recordStudioHistory({ modelCategory: "video", modelId, result });
+          return Response.json({ result });
+        }
+        if (modelId === "grok-imagine") {
+          const parsed = parseStudioVideoParameters(parameters);
+          if (!parsed.ok) {
+            return Response.json({ error: parsed.error }, { status: 400 });
+          }
+          const requiredStart = requireStartImage(parsed.value, "Grok Imagine");
+          if (!requiredStart.ok) {
+            return Response.json({ error: requiredStart.error }, { status: 400 });
+          }
+          const result = await generateGrokImagine(modelId, requiredStart.value);
+          await recordStudioHistory({ modelCategory: "video", modelId, result });
+          return Response.json({ result });
+        }
+        if (modelId === "grok-imagine-edit") {
+          const parsed = parseGrokImagineEditParameters(parameters);
+          if (!parsed.ok) {
+            return Response.json({ error: parsed.error }, { status: 400 });
+          }
+          const result = await generateGrokImagineEdit(modelId, parsed.value);
           await recordStudioHistory({ modelCategory: "video", modelId, result });
           return Response.json({ result });
         }

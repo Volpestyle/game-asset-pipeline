@@ -55,7 +55,9 @@ export function VideoModelForm({
   const config = getVideoModelConfig(modelId);
   const sizeOptions = getVideoSizeOptions(modelId);
   const secondsOptions = getVideoSecondsOptions(modelId);
-  const requiresStartImage = modelId === "wan2.2";
+  const supportsStartImage = Boolean(config.supportsStartImage || config.supportsStartEnd);
+  const supportsEndImage = Boolean(config.supportsStartEnd);
+  const requiresStartImage = Boolean(config.requiresStartImage);
 
   const storageScope = "video";
   const promptKey = buildModelStudioKey(storageScope, modelId, "prompt");
@@ -85,7 +87,8 @@ export function VideoModelForm({
   const [concepts, setConcepts] = useState<string[]>([]);
   const [referenceImages, setReferenceImages] = useState<MultiRefImage[]>([]);
   const promptValue = prompt.trim();
-  const canSubmit = Boolean(promptValue) && (!requiresStartImage || Boolean(startImage));
+  const startImageRequired = requiresStartImage && !startImage;
+  const canSubmit = Boolean(promptValue) && !startImageRequired;
 
   const startImageRef = useRef<HTMLInputElement>(null);
   const endImageRef = useRef<HTMLInputElement>(null);
@@ -99,7 +102,11 @@ export function VideoModelForm({
   const supportsEffect = Boolean(config.supportsEffect);
   const effectActive = supportsEffect && effect.trim().length > 0;
   const supportsSeed = Boolean(config.supportsSeed);
-  const endImageDisabled = referenceImagesActive || effectActive;
+  const endImageDisabled = supportsEndImage && (referenceImagesActive || effectActive);
+  const startImageLabelBase = supportsEndImage ? "Start Image" : "Input Image";
+  const startImageLabel = requiresStartImage
+    ? `${startImageLabelBase} (required)`
+    : startImageLabelBase;
 
   const getLandscapeSizeOption = useCallback(() => {
     const options = sizeOptions.filter((opt) => {
@@ -187,6 +194,12 @@ export function VideoModelForm({
       setGenerateAudio(false);
     }
   }, [config.replicateSupportsAudio, generateAudio]);
+
+  useEffect(() => {
+    if (requiresStartImage && startImage) {
+      setStartImageError(null);
+    }
+  }, [requiresStartImage, startImage]);
 
   const handleStartImageUpload = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -354,7 +367,10 @@ export function VideoModelForm({
     (e: React.FormEvent) => {
       e.preventDefault();
       if (!promptValue) return;
-      if (requiresStartImage && !startImage) return;
+      if (startImageRequired) {
+        setStartImageError("Start image is required for this model.");
+        return;
+      }
 
       const parameters: StudioVideoParameters = {
         prompt: promptValue,
@@ -362,12 +378,12 @@ export function VideoModelForm({
         seconds,
       };
 
-      if (startImage) {
+      if (supportsStartImage && startImage) {
         parameters.startImage = startImage;
       }
       if (
         endImage &&
-        config.supportsStartEnd &&
+        supportsEndImage &&
         !referenceImagesActive &&
         !effectActive
       ) {
@@ -408,6 +424,9 @@ export function VideoModelForm({
       negativePrompt,
       seed,
       supportsSeed,
+      supportsStartImage,
+      supportsEndImage,
+      startImageRequired,
       referenceImages,
       supportsReferenceImages,
       referenceImagesActive,
@@ -417,7 +436,6 @@ export function VideoModelForm({
       effect,
       supportsEffect,
       config,
-      requiresStartImage,
       onSubmit,
     ]
   );
@@ -479,118 +497,130 @@ export function VideoModelForm({
         </div>
       </div>
 
-      {config.supportsStartEnd && (
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs text-muted-foreground mb-1">
-              Start Image
-            </label>
-            <input
-              ref={startImageRef}
-              type="file"
-              accept="image/*"
-              onChange={handleStartImageUpload}
-              className="hidden"
-            />
-            <button
-              type="button"
-              onClick={() => startImageRef.current?.click()}
-              className={`w-full px-3 py-2 text-xs border border-border rounded flex items-center justify-center gap-2 transition-colors ${
-                startImage
-                  ? "bg-primary/10 border-primary text-primary"
-                  : "bg-background hover:bg-secondary"
-              }`}
-            >
-              <Upload className="w-3.5 h-3.5" strokeWidth={1.5} />
-              {startImage ? "Change" : "Upload"}
-            </button>
-            {startImage && (
-              <div className="mt-2 space-y-1">
-                <img
-                  src={startImage}
-                  alt="Start preview"
-                  className="w-full h-24 object-contain border border-border bg-muted/20 rounded"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setStartImage(null);
-                    setStartImageError(null);
-                    if (startImageRef.current) {
-                      startImageRef.current.value = "";
-                    }
-                  }}
-                  className="text-[10px] text-destructive hover:underline"
-                >
-                  Clear
-                </button>
-              </div>
-            )}
-            {startImageError && (
-              <p className="text-[10px] text-destructive mt-1">
-                {startImageError}
-              </p>
-            )}
-            {requiresStartImage && !startImage && (
-              <p className="text-[10px] text-destructive mt-1">
-                Start image required for Wan 2.2.
-              </p>
-            )}
-          </div>
+      {(supportsStartImage || supportsEndImage) && (
+        <div
+          className={`grid gap-3 ${
+            supportsStartImage && supportsEndImage ? "grid-cols-2" : "grid-cols-1"
+          }`}
+        >
+          {supportsStartImage && (
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">
+                {startImageLabel}
+              </label>
+              <input
+                ref={startImageRef}
+                type="file"
+                accept="image/*"
+                onChange={handleStartImageUpload}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => startImageRef.current?.click()}
+                className={`w-full px-3 py-2 text-xs border border-border rounded flex items-center justify-center gap-2 transition-colors ${
+                  startImage
+                    ? "bg-primary/10 border-primary text-primary"
+                    : "bg-background hover:bg-secondary"
+                }`}
+              >
+                <Upload className="w-3.5 h-3.5" strokeWidth={1.5} />
+                {startImage ? "Change" : "Upload"}
+              </button>
+              {startImage && (
+                <div className="mt-2 space-y-1">
+                  <img
+                    src={startImage}
+                    alt="Start preview"
+                    className="w-full h-24 object-contain border border-border bg-muted/20 rounded"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStartImage(null);
+                      setStartImageError(null);
+                      if (startImageRef.current) {
+                        startImageRef.current.value = "";
+                      }
+                    }}
+                    className="text-[10px] text-destructive hover:underline"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+              {startImageError && (
+                <p className="text-[10px] text-destructive mt-1">
+                  {startImageError}
+                </p>
+              )}
+              {startImageRequired && !startImageError && (
+                <p className="text-[10px] text-destructive mt-1">
+                  Start image is required for this model.
+                </p>
+              )}
+            </div>
+          )}
 
-          <div>
-            <label className="block text-xs text-muted-foreground mb-1">
-              End Image
-            </label>
-            <input
-              ref={endImageRef}
-              type="file"
-              accept="image/*"
-              onChange={handleEndImageUpload}
-              className="hidden"
-              disabled={endImageDisabled}
-            />
-            <button
-              type="button"
-              onClick={() => endImageRef.current?.click()}
-              disabled={endImageDisabled}
-              className={`w-full px-3 py-2 text-xs border border-border rounded flex items-center justify-center gap-2 transition-colors ${
-                endImage
-                  ? "bg-primary/10 border-primary text-primary"
-                  : "bg-background hover:bg-secondary"
-              }`}
-            >
-              <Upload className="w-3.5 h-3.5" strokeWidth={1.5} />
-              {endImageDisabled ? "Disabled" : endImage ? "Change" : "Upload"}
-            </button>
-            {endImage && (
-              <div className={`mt-2 space-y-1 ${endImageDisabled ? "opacity-60" : ""}`}>
-                <img
-                  src={endImage}
-                  alt="End preview"
-                  className="w-full h-24 object-contain border border-border bg-muted/20 rounded"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEndImage(null);
-                    setEndImageError(null);
-                    if (endImageRef.current) {
-                      endImageRef.current.value = "";
-                    }
-                  }}
-                  className="text-[10px] text-destructive hover:underline"
+          {supportsEndImage && (
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">
+                End Image
+              </label>
+              <input
+                ref={endImageRef}
+                type="file"
+                accept="image/*"
+                onChange={handleEndImageUpload}
+                className="hidden"
+                disabled={endImageDisabled}
+              />
+              <button
+                type="button"
+                onClick={() => endImageRef.current?.click()}
+                disabled={endImageDisabled}
+                className={`w-full px-3 py-2 text-xs border border-border rounded flex items-center justify-center gap-2 transition-colors ${
+                  endImage
+                    ? "bg-primary/10 border-primary text-primary"
+                    : "bg-background hover:bg-secondary"
+                }`}
+              >
+                <Upload className="w-3.5 h-3.5" strokeWidth={1.5} />
+                {endImageDisabled ? "Disabled" : endImage ? "Change" : "Upload"}
+              </button>
+              {endImage && (
+                <div
+                  className={`mt-2 space-y-1 ${
+                    endImageDisabled ? "opacity-60" : ""
+                  }`}
                 >
-                  Clear
-                </button>
-              </div>
-            )}
-            {endImageError && (
-              <p className="text-[10px] text-destructive mt-1">
-                {endImageError}
-              </p>
-            )}
-          </div>
+                  <img
+                    src={endImage}
+                    alt="End preview"
+                    className="w-full h-24 object-contain border border-border bg-muted/20 rounded"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEndImage(null);
+                      setEndImageError(null);
+                      if (endImageRef.current) {
+                        endImageRef.current.value = "";
+                      }
+                    }}
+                    className="text-[10px] text-destructive hover:underline"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+              {endImageError && (
+                <p className="text-[10px] text-destructive mt-1">
+                  {endImageError}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       )}
 

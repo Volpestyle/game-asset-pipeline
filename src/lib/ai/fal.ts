@@ -60,6 +60,41 @@ export type WanResponse = {
   video: FalFile;
 };
 
+export type GrokImagineResolution = "480p" | "720p";
+export type GrokImagineAspectRatio =
+  | "auto"
+  | "16:9"
+  | "4:3"
+  | "3:2"
+  | "1:1"
+  | "2:3"
+  | "3:4"
+  | "9:16";
+
+export type GrokImagineRequest = {
+  prompt: string;
+  image_url: string;
+  duration?: number;
+  aspect_ratio?: GrokImagineAspectRatio;
+  resolution?: GrokImagineResolution;
+};
+
+export type GrokImagineResponse = {
+  video: FalFile;
+};
+
+export type GrokImagineEditResolution = "auto" | "480p" | "720p";
+
+export type GrokImagineEditRequest = {
+  prompt: string;
+  video_url: string;
+  resolution?: GrokImagineEditResolution;
+};
+
+export type GrokImagineEditResponse = {
+  video: FalFile;
+};
+
 type FalErrorPayload = {
   detail?: string;
   error?: string;
@@ -125,6 +160,24 @@ export async function runPikaframes(
 export async function runWanVideo(input: WanRequest): Promise<WanResponse> {
   return postJson<WanResponse>(
     "fal-ai/wan/v2.2-a14b/image-to-video",
+    input
+  );
+}
+
+export async function runGrokImagineVideo(
+  input: GrokImagineRequest
+): Promise<GrokImagineResponse> {
+  return postJson<GrokImagineResponse>(
+    "xai/grok-imagine-video/image-to-video",
+    input
+  );
+}
+
+export async function runGrokImagineEditVideo(
+  input: GrokImagineEditRequest
+): Promise<GrokImagineEditResponse> {
+  return postJson<GrokImagineEditResponse>(
+    "xai/grok-imagine-video/edit-video",
     input
   );
 }

@@ -1,4 +1,5 @@
 import type { PromptProfile } from "@/types";
+import type { LoopMode } from "@/lib/frameUtils";
 
 const ANIMATION_STYLE_HINTS_VERBOSE: Record<string, string> = {
   idle: "subtle breathing, gentle sway, standing in relaxed pose",
@@ -8,6 +9,14 @@ const ANIMATION_STYLE_HINTS_CONCISE: Record<string, string> = {
   idle: "idling animation loop, subtle idle movements",
   walk: "looping walk cycle",
   run: "looping run cycle",
+  attack: "attack animation",
+  jump: "jump animation",
+};
+
+const ANIMATION_STYLE_HINTS_CONCISE_NO_LOOP: Record<string, string> = {
+  idle: "idle animation, subtle idle movements",
+  walk: "walk animation",
+  run: "run animation",
   attack: "attack animation",
   jump: "jump animation",
 };
@@ -64,12 +73,19 @@ export function buildVideoPrompt(options: {
   artStyle?: string;
   bgKeyColor?: string;
   promptProfile?: PromptProfile;
+  loopMode?: LoopMode;
 }) {
   const styleKey = options.style ?? "";
   const promptProfile = options.promptProfile ?? "verbose";
+  const resolvedLoopMode: LoopMode =
+    options.loopMode === "none" || options.loopMode === "pingpong"
+      ? options.loopMode
+      : "loop";
   const styleHintSource =
     promptProfile === "concise"
-      ? ANIMATION_STYLE_HINTS_CONCISE
+      ? resolvedLoopMode === "none"
+        ? ANIMATION_STYLE_HINTS_CONCISE_NO_LOOP
+        : ANIMATION_STYLE_HINTS_CONCISE
       : ANIMATION_STYLE_HINTS_VERBOSE;
   const styleHint =
     styleHintSource[styleKey] ?? (styleKey ? `${styleKey} animation` : "");
@@ -84,12 +100,17 @@ export function buildVideoPrompt(options: {
       artConfig.conciseLabel || artConfig.label,
       DEFAULT_CHARACTER_TYPE,
       styleHint,
-    ]
-      .filter(Boolean)
-      .join(", ");
-    return parts;
+    ].filter(Boolean);
+    if (resolvedLoopMode === "none") {
+      parts.push("non-looping");
+    }
+    return parts.join(", ");
   }
 
+  const loopConstraint =
+    resolvedLoopMode === "none"
+      ? "non-looping animation, start and end poses can differ"
+      : "seamless looping animation, first and last pose match";
   const parts = [
     options.description,
     DEFAULT_CHARACTER_TYPE,
@@ -99,7 +120,7 @@ export function buildVideoPrompt(options: {
     "static camera",
     "character stays centered, no camera movement",
     "keep proportions and identity identical to reference",
-    "seamless looping animation, first and last pose match",
+    loopConstraint,
   ]
     .filter(Boolean)
     .join(", ");

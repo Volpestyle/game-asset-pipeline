@@ -3,9 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, MediaImageList, NavArrowDown, NavArrowUp } from "iconoir-react";
 import type { StudioHistoryEntry, StudioHistoryPage } from "@/types/studio";
+import { cn } from "@/lib/utils";
 
 type HistoryPanelProps = {
   refreshToken: number;
+  defaultOpen?: boolean;
+  showToggle?: boolean;
+  className?: string;
+  listClassName?: string;
 };
 
 type HistoryFetchState = {
@@ -66,8 +71,16 @@ function downloadFile(url: string, filename: string) {
   document.body.removeChild(link);
 }
 
-export function HistoryPanel({ refreshToken }: HistoryPanelProps) {
-  const [isOpen, setIsOpen] = useState(false);
+export function HistoryPanel({
+  refreshToken,
+  defaultOpen = false,
+  showToggle = true,
+  className,
+  listClassName,
+}: HistoryPanelProps) {
+  const [isOpen, setIsOpen] = useState(() =>
+    showToggle ? defaultOpen : true
+  );
   const [history, setHistory] = useState<HistoryFetchState>({
     items: [],
     nextOffset: 0,
@@ -142,22 +155,30 @@ export function HistoryPanel({ refreshToken }: HistoryPanelProps) {
     ) : null;
 
   return (
-    <div className="border border-border rounded overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setIsOpen((prev) => !prev)}
-        className="w-full px-3 py-2 text-xs flex items-center justify-between bg-secondary/40 hover:bg-secondary/60 transition-colors"
-      >
-        <span className="flex items-center gap-2 text-muted-foreground">
-          <MediaImageList className="w-4 h-4" strokeWidth={1.5} />
-          History ({history.total})
-        </span>
-        {isOpen ? (
-          <NavArrowUp className="w-4 h-4" strokeWidth={2} />
-        ) : (
-          <NavArrowDown className="w-4 h-4" strokeWidth={2} />
-        )}
-      </button>
+    <div
+      className={cn(
+        "border border-border rounded overflow-hidden",
+        !showToggle && "border-0",
+        className
+      )}
+    >
+      {showToggle && (
+        <button
+          type="button"
+          onClick={() => setIsOpen((prev) => !prev)}
+          className="w-full px-3 py-2 text-xs flex items-center justify-between bg-secondary/40 hover:bg-secondary/60 transition-colors"
+        >
+          <span className="flex items-center gap-2 text-muted-foreground">
+            <MediaImageList className="w-4 h-4" strokeWidth={1.5} />
+            History ({history.total})
+          </span>
+          {isOpen ? (
+            <NavArrowUp className="w-4 h-4" strokeWidth={2} />
+          ) : (
+            <NavArrowDown className="w-4 h-4" strokeWidth={2} />
+          )}
+        </button>
+      )}
 
       {isOpen && (
         <div className="border-t border-border">
@@ -169,7 +190,10 @@ export function HistoryPanel({ refreshToken }: HistoryPanelProps) {
           <div
             ref={containerRef}
             onScroll={handleScroll}
-            className="max-h-[320px] overflow-y-auto space-y-3 p-3"
+            className={cn(
+              "max-h-[320px] overflow-y-auto space-y-3 p-3",
+              listClassName
+            )}
           >
             {history.items.map((entry) => (
               <div

@@ -9,6 +9,8 @@ export type VideoModelId =
   | "tooncrafter"
   | "pikaframes"
   | "wan2.2"
+  | "grok-imagine"
+  | "grok-imagine-edit"
   | "veo-3.1"
   | "veo-3.1-fast"
   | "veo-3.1-generate-preview"
@@ -29,10 +31,13 @@ type VideoModelConfig = {
   replicateModel?: string;
   vertexModelId?: VertexVeoModelId;
   supportsStartEnd?: boolean;
+  supportsStartImage?: boolean;
   supportsLoop?: boolean;
   supportsNegativePrompt?: boolean;
   startImageKey?: string;
   endImageKey?: string;
+  requiresStartImage?: boolean;
+  requiresVideoInput?: boolean;
   replicateResolutionKey?: "quality" | "resolution" | null;
   replicateSupportsAudio?: boolean;
   supportsSeed?: boolean;
@@ -89,6 +94,8 @@ const VIDEO_MODEL_LIST: VideoModelId[] = [
   "tooncrafter",
   "pikaframes",
   "wan2.2",
+  "grok-imagine",
+  "grok-imagine-edit",
   "veo-3.1-fast",
   "veo-3.1",
   "veo-3.1-fast-generate-preview",
@@ -103,6 +110,7 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     sizeOptions: ["720x1280", "1280x720"],
     secondsOptions: [4, 8, 12],
     promptProfile: "verbose",
+    supportsStartImage: true,
   },
   "sora-2-pro": {
     id: "sora-2-pro",
@@ -111,6 +119,7 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     sizeOptions: ["720x1280", "1280x720", "1024x1792", "1792x1024"],
     secondsOptions: [4, 8, 12],
     promptProfile: "verbose",
+    supportsStartImage: true,
   },
   ray2: {
     id: "ray2",
@@ -187,6 +196,25 @@ const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
     supportsNegativePrompt: true,
     supportsStartEnd: true,
     supportsSeed: true,
+  },
+  "grok-imagine": {
+    id: "grok-imagine",
+    label: "Grok Imagine (Fal)",
+    provider: "fal",
+    sizeOptions: ["1280x720", "720x1280"],
+    secondsOptions: [4, 6, 8, 12, 15],
+    promptProfile: "concise",
+    supportsStartImage: true,
+    requiresStartImage: true,
+  },
+  "grok-imagine-edit": {
+    id: "grok-imagine-edit",
+    label: "Grok Imagine Edit (Fal)",
+    provider: "fal",
+    sizeOptions: ["1280x720", "720x1280", "854x480", "480x854"],
+    secondsOptions: [4, 6, 8, 12],
+    promptProfile: "concise",
+    requiresVideoInput: true,
   },
   "veo-3.1-fast": {
     id: "veo-3.1-fast",
@@ -345,6 +373,10 @@ export function getVideoModelConceptOptions(model?: string): string[] {
 
 export function getVideoModelSupportsEffect(model?: string): boolean {
   return Boolean(getVideoModelConfig(model).supportsEffect);
+}
+
+export function getVideoModelRequiresVideoInput(model?: string): boolean {
+  return Boolean(getVideoModelConfig(model).requiresVideoInput);
 }
 
 export function getVideoModelStartImageKey(model?: string): string | undefined {

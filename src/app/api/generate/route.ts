@@ -6,10 +6,21 @@ import { createPrediction, waitForPrediction } from "@/lib/ai/replicate";
 import {
   runPikaframes,
   runWanVideo,
+  runGrokImagineVideo,
+  runGrokImagineEditVideo,
   type WanRequest,
+  type GrokImagineRequest,
+  type GrokImagineEditRequest,
   type PikaframesTransitionInput,
 } from "@/lib/ai/fal";
 import { buildPikaframesPlan } from "@/lib/ai/pikaframes";
+import {
+  clampGrokImagineDuration,
+  getGrokImagineAspectRatio,
+  getGrokImagineResolution,
+  getGrokImagineEditResolution,
+} from "@/lib/ai/grokImagine";
+import { resolveFalMediaUrlFromPath } from "@/lib/ai/falMedia";
 import {
   clampWanFrames,
   getWanAspectRatio,
@@ -24,7 +35,8 @@ import { DEFAULT_BG_KEY, parseHexColor } from "@/lib/color";
 import { fileToDataUrl, bufferToDataUrl } from "@/lib/dataUrl";
 import { runFfmpeg } from "@/lib/ffmpeg";
 import { buildGeneratedFramesFromSequence } from "@/lib/frameOps";
-import { buildSpritesheetLayout, formatFrameFilename, sortFrameFiles } from "@/lib/frameUtils";
+import { resolveSpritesheetLayoutForFrames } from "@/lib/frameSizing";
+import { formatFrameFilename, sortFrameFiles } from "@/lib/frameUtils";
 import {
   normalizeSegmentPlan,
   sampleEvenly,
@@ -98,14 +110,21 @@ function joinUrl(base: string, pathPart: string) {
   return `${trimmedBase}${trimmedPath}`;
 }
 
-function storageUrlFromPath(filePath: string): string | null {
-  const root = storagePath();
-  const relative = path.relative(root, filePath);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    return null;
+async function downloadVideoToPath(options: {
+  outputUrl: string;
+  videoPath: string;
+  context: string;
+}) {
+  const response = await fetch(options.outputUrl, { signal: getShutdownSignal() });
+  if (!response.ok) {
+    logger.error(`${options.context} video download failed`, {
+      status: response.status,
+      url: options.outputUrl,
+    });
+    throw new Error("Failed to download generated video.");
   }
-  const normalized = relative.split(path.sep).join("/");
-  return `/api/storage/${normalized}`;
+  const outputBuffer = Buffer.from(await response.arrayBuffer());
+  await fs.writeFile(options.videoPath, outputBuffer);
 }
 
 async function resolvePikaframesImageUrl(options: {
@@ -139,18 +158,17 @@ async function resolveFalImageUrlFromPath(options: {
   imagePath: string;
   assetBaseUrl?: string;
 }) {
-  const assetBaseUrl = options.assetBaseUrl?.trim();
-  if (assetBaseUrl) {
-    const relativeUrl = storageUrlFromPath(options.imagePath);
-    if (relativeUrl) {
-      return joinUrl(assetBaseUrl, relativeUrl);
-    }
+  const resolved = await resolveFalMediaUrlFromPath({
+    mediaPath: options.imagePath,
+    assetBaseUrl: options.assetBaseUrl,
+  });
+  if (options.assetBaseUrl?.trim() && resolved.source === "data") {
     logger.warn("Fal asset base URL set but path is outside storage", {
       animationId: options.animationId,
       imagePath: options.imagePath,
     });
   }
-  return fileToDataUrl(options.imagePath);
+  return resolved.url;
 }
 
 async function resolveFalKeyframeImageUrl(options: {
@@ -524,6 +542,8 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
     const modelConfig = getVideoModelConfig(model);
     const isPikaframes = modelConfig.id === "pikaframes";
     const isWan = modelConfig.id === "wan2.2";
+    const isGrokImagine = modelConfig.id === "grok-imagine";
+    const isGrokImagineEdit = modelConfig.id === "grok-imagine-edit";
     const vertexModelId = getVertexModelForVideo(model);
     const supportsNegativePrompt = Boolean(modelConfig.supportsNegativePrompt);
     const supportsSeed = Boolean(modelConfig.supportsSeed);
@@ -700,8 +720,11 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
     }
     const requestedFps = Number(animation.extractFps ?? animation.fps ?? 12);
     const extractFps = [6, 8, 12, 24].includes(requestedFps) ? requestedFps : 12;
+    const loopModeValue = typeof animation.loopMode === "string" ? animation.loopMode : "";
     const loopMode =
-      String(animation.loopMode ?? "loop") === "pingpong" ? "pingpong" : "loop";
+      loopModeValue === "none" || loopModeValue === "pingpong"
+        ? loopModeValue
+        : "loop";
     const sheetColumns = Math.max(1, Number(animation.sheetColumns ?? 6));
     let frameWidth = Number(animation.frameWidth ?? character.baseWidth ?? 253);
     let frameHeight = Number(animation.frameHeight ?? character.baseHeight ?? 504);
@@ -826,7 +849,8 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
     const replicateModel = getReplicateModelForVideo(model);
     const useOpenAI = provider === "openai";
     const useReplicateVideo = provider === "replicate" && Boolean(replicateModel);
-    const useFal = provider === "fal" && (isPikaframes || isWan);
+    const useFal =
+      provider === "fal" && (isPikaframes || isWan || isGrokImagine || isGrokImagineEdit);
     const useVertex = provider === "vertex";
 
     if (!useOpenAI && !useReplicateVideo && !useFal && !useVertex) {
@@ -839,7 +863,7 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
       throw new Error("Vertex continuation does not support segmented generation.");
     }
 
-    if (segmentPlan && !isPikaframes && !isWan) {
+    if (segmentPlan && !isPikaframes && !isWan && !isGrokImagine && !isGrokImagineEdit) {
       const validationError = validateSegmentPlan({
         segments: segmentPlan,
         totalFrameCount,
@@ -921,6 +945,12 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
       }
       if (segmentPlan && isWan) {
         throw new Error("Wan 2.2 does not support segmented generation.");
+      }
+      if (segmentPlan && isGrokImagine) {
+        throw new Error("Grok Imagine does not support segmented generation.");
+      }
+      if (segmentPlan && isGrokImagineEdit) {
+        throw new Error("Grok Imagine Edit does not support segmented generation.");
       }
 
       if (isToonCrafter && !segmentPlan) {
@@ -1095,12 +1125,13 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
         ? ""
         : typeof promptOverride === "string" && promptOverride.trim()
         ? promptOverride
-        : buildVideoPrompt({
+          : buildVideoPrompt({
             description: String(animation.description ?? ""),
             style: String(animation.style ?? ""),
             artStyle: String(character.style ?? "pixel-art"),
             bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
             promptProfile: resolvedPromptProfile,
+            loopMode,
           });
 
       let providerSpritesheetUrl: string | undefined;
@@ -1150,7 +1181,8 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
 
         const referenceUrl = String(primary?.url ?? "");
         const loopRequested =
-          segmentPlan.length > 1 ? false : animation.generationLoop === true;
+          loopMode !== "none" &&
+          (segmentPlan.length > 1 ? false : animation.generationLoop === true);
 
         const normalizeProgress = (value?: number) => {
           if (typeof value !== "number") return null;
@@ -1436,7 +1468,7 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
         }
 
         const effectiveLoopMode =
-          segmentPlan.length > 1 ? "loop" : loopMode;
+          segmentPlan.length > 1 && loopMode === "pingpong" ? "loop" : loopMode;
         if (segmentPlan.length > 1 && loopMode === "pingpong") {
           const note = "Ping-pong output disabled for segmented generation.";
           generationNote = generationNote ? `${generationNote} ${note}` : note;
@@ -1451,12 +1483,18 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
           source: model,
         });
 
-        const layout = buildSpritesheetLayout({
-          frameWidth,
-          frameHeight,
+        const sizing = await resolveSpritesheetLayoutForFrames({
+          framesDir,
+          fallbackFrameWidth: frameWidth,
+          fallbackFrameHeight: frameHeight,
           columns: sheetColumns,
           frameCount: generatedFrames.length,
+          animationId,
+          context: "generation:segment",
         });
+        frameWidth = sizing.frameWidth;
+        frameHeight = sizing.frameHeight;
+        const layout = sizing.layout;
 
         const spritesheetName = `spritesheet_${Date.now()}_segment.png`;
         const spritesheetPath = path.join(generatedDir, spritesheetName);
@@ -1550,13 +1588,11 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
           if (!outputUrl) {
             throw new Error("No video returned from Pikaframes.");
           }
-
-          const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
-          if (!outputResponse.ok) {
-            throw new Error("Failed to download generated video.");
-          }
-          const outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
-          await fs.writeFile(videoPath, outputBuffer);
+          await downloadVideoToPath({
+            outputUrl,
+            videoPath,
+            context: "Pikaframes",
+          });
         } else if (isWan) {
           await updateGenerationJob({
             provider: "fal",
@@ -1575,7 +1611,8 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
           const endKeyframe = keyframesWithImages.find(
             (kf) => kf.frameIndex === lastFrameIndex
           );
-          const loopRequested = animation.generationLoop === true;
+          const loopRequested =
+            loopMode !== "none" && animation.generationLoop === true;
 
           const customStartPath = await resolveLocalImagePath(
             typeof animation.generationStartImageUrl === "string"
@@ -1791,13 +1828,160 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
           if (!outputUrl) {
             throw new Error("No video returned from Wan 2.2.");
           }
+          await downloadVideoToPath({
+            outputUrl,
+            videoPath,
+            context: "Wan 2.2",
+          });
+        } else if (isGrokImagine) {
+          await updateGenerationJob({
+            provider: "fal",
+            providerJobId: "grok-imagine",
+            status: "in_progress",
+            progress: 0,
+          });
 
-          const outputResponse = await fetch(outputUrl, { signal: getShutdownSignal() });
-          if (!outputResponse.ok) {
-            throw new Error("Failed to download generated video.");
+          const customStartPath = await resolveLocalImagePath(
+            typeof animation.generationStartImageUrl === "string"
+              ? animation.generationStartImageUrl
+              : undefined
+          );
+          const assetBaseUrl = process.env.FAL_ASSET_BASE_URL?.trim();
+          let startImageUrl = "";
+          if (customStartPath) {
+            const normalizedPath = await normalizeGenerationFrame({
+              animationId,
+              kind: "start",
+              sourcePath: customStartPath,
+              generationSize: size,
+              bgKeyColor: workingSpec.bgKeyColor ?? DEFAULT_BG_KEY,
+            });
+            startImageUrl = await resolveFalImageUrlFromPath({
+              animationId,
+              imagePath: normalizedPath,
+              assetBaseUrl,
+            });
+            logger.info("Grok Imagine start image override applied", {
+              animationId,
+            });
           }
-          const outputBuffer = Buffer.from(await outputResponse.arrayBuffer());
-          await fs.writeFile(videoPath, outputBuffer);
+          if (!startImageUrl) {
+            startImageUrl = await resolveFalImageUrlFromPath({
+              animationId,
+              imagePath: workingPath,
+              assetBaseUrl,
+            });
+          }
+
+          if (!startImageUrl) {
+            throw new Error("Grok Imagine requires a start image.");
+          }
+
+          const durationClamp = clampGrokImagineDuration(seconds);
+          if (durationClamp.clamped) {
+            await appendGenerationNote(
+              `Grok Imagine duration clamped to ${durationClamp.seconds}s (requested ${seconds}).`
+            );
+            logger.warn("Grok Imagine duration clamped", {
+              animationId,
+              requested: seconds,
+              clamped: durationClamp.seconds,
+            });
+          }
+
+          const resolution = getGrokImagineEditResolution(size);
+          const aspectRatio = getGrokImagineAspectRatio(size);
+
+          logger.info("Grok Imagine request prepared", {
+            animationId,
+            duration: durationClamp.seconds,
+            resolution,
+            aspectRatio,
+            hasStartImage: Boolean(startImageUrl),
+          });
+
+          const grokPayload: GrokImagineRequest = {
+            prompt,
+            image_url: startImageUrl,
+            duration: durationClamp.seconds,
+            aspect_ratio: aspectRatio,
+            resolution,
+          };
+
+          const falResponse = await runGrokImagineVideo(grokPayload);
+          const outputUrl = falResponse.video?.url;
+          if (!outputUrl) {
+            throw new Error("No video returned from Grok Imagine.");
+          }
+          await downloadVideoToPath({
+            outputUrl,
+            videoPath,
+            context: "Grok Imagine",
+          });
+        } else if (isGrokImagineEdit) {
+          await updateGenerationJob({
+            provider: "fal",
+            providerJobId: "grok-imagine-edit",
+            status: "in_progress",
+            progress: 0,
+          });
+
+          const continuationUrl =
+            typeof animation.generationContinuationVideoUrl === "string"
+              ? animation.generationContinuationVideoUrl.trim()
+              : "";
+          const sourceVideoUrl =
+            typeof animation.sourceVideoUrl === "string"
+              ? animation.sourceVideoUrl.trim()
+              : "";
+          const inputVideoUrl = continuationUrl || sourceVideoUrl;
+          if (!inputVideoUrl) {
+            throw new Error(
+              "Grok Imagine Edit requires an input video. Upload a clip or generate a video first."
+            );
+          }
+
+          const inputVideoPath = storagePathFromUrl(inputVideoUrl);
+          if (!inputVideoPath || !(await fileExists(inputVideoPath))) {
+            throw new Error("Input video not found.");
+          }
+
+          const assetBaseUrl = process.env.FAL_ASSET_BASE_URL?.trim();
+          const resolved = await resolveFalMediaUrlFromPath({
+            mediaPath: inputVideoPath,
+            assetBaseUrl,
+          });
+          if (assetBaseUrl && resolved.source === "data") {
+            logger.warn("Grok Imagine Edit using data URL input", {
+              animationId,
+              reason: "asset_base_unavailable",
+            });
+          }
+
+          const resolution = getGrokImagineResolution(size);
+
+          logger.info("Grok Imagine Edit request prepared", {
+            animationId,
+            resolution,
+            source: continuationUrl ? "upload" : "generated",
+          });
+
+          const grokPayload: GrokImagineEditRequest = {
+            prompt,
+            video_url: resolved.url,
+            resolution,
+          };
+
+          const falResponse = await runGrokImagineEditVideo(grokPayload);
+          const outputUrl = falResponse.video?.url;
+          if (!outputUrl) {
+            throw new Error("No video returned from Grok Imagine Edit.");
+          }
+          await downloadVideoToPath({
+            outputUrl,
+            videoPath,
+            context: "Grok Imagine Edit",
+          });
         } else {
           throw new Error("Unsupported Fal model selection.");
         }
@@ -1962,7 +2146,8 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
           const startImageKey = modelConfig.startImageKey;
           const endImageKey = modelConfig.endImageKey;
           const resolutionKey = modelConfig.replicateResolutionKey;
-          const loopRequested = animation.generationLoop === true;
+          const loopRequested =
+            loopMode !== "none" && animation.generationLoop === true;
 
           const customStartPath = await resolveLocalImagePath(
             typeof animation.generationStartImageUrl === "string"
@@ -2141,12 +2326,18 @@ async function runGeneration(animationId: string, segments?: SegmentInput[]) {
         source: model,
       });
 
-      const layout = buildSpritesheetLayout({
-        frameWidth,
-        frameHeight,
+      const sizing = await resolveSpritesheetLayoutForFrames({
+        framesDir,
+        fallbackFrameWidth: frameWidth,
+        fallbackFrameHeight: frameHeight,
         columns: sheetColumns,
         frameCount: generatedFrames.length,
+        animationId,
+        context: "generation:video",
       });
+      frameWidth = sizing.frameWidth;
+      frameHeight = sizing.frameHeight;
+      const layout = sizing.layout;
 
       const spritesheetName = `spritesheet_${Date.now()}.png`;
       const spritesheetPath = path.join(generatedDir, spritesheetName);

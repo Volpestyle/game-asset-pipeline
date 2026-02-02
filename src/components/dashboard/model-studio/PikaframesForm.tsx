@@ -64,6 +64,7 @@ export function PikaframesForm({
   const [size, setSize] = useState(defaultSize);
   const [seconds, setSeconds] = useState(defaultSeconds);
   const [keyframes, setKeyframes] = useState<string[]>([]);
+  const [keyframeError, setKeyframeError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -146,13 +147,34 @@ export function PikaframesForm({
       if (!files) return;
 
       const nextFrames: string[] = [];
+      let sawError = false;
       for (let i = 0; i < files.length; i += 1) {
         if (keyframes.length + nextFrames.length >= 5) break;
-        const base64 = await fileToBase64(files[i]);
-        nextFrames.push(base64);
+        try {
+          const base64 = await fileToBase64(files[i]);
+          nextFrames.push(base64);
+        } catch (error) {
+          sawError = true;
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Failed to read a keyframe image.";
+          console.error("Pikaframes keyframe upload failed", {
+            fileName: files[i].name,
+            message,
+          });
+          setKeyframeError(message);
+        }
       }
 
-      setKeyframes((prev) => [...prev, ...nextFrames].slice(0, 5));
+      if (nextFrames.length > 0) {
+        setKeyframes((prev) => [...prev, ...nextFrames].slice(0, 5));
+        if (!sawError) {
+          setKeyframeError(null);
+        }
+      } else if (sawError) {
+        setKeyframeError((prev) => prev ?? "Failed to read keyframe images.");
+      }
 
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -163,6 +185,7 @@ export function PikaframesForm({
 
   const removeKeyframe = useCallback((index: number) => {
     setKeyframes((prev) => prev.filter((_, i) => i !== index));
+    setKeyframeError(null);
   }, []);
 
   const handleSubmit = useCallback(
@@ -276,6 +299,9 @@ export function PikaframesForm({
           <p className="text-[10px] text-destructive mt-1">
             Minimum 2 keyframes required
           </p>
+        )}
+        {keyframeError && (
+          <p className="text-[10px] text-destructive mt-1">{keyframeError}</p>
         )}
       </div>
 

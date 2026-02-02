@@ -1,14 +1,18 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
+import { MediaImageList } from "iconoir-react";
 import { ModelSelector } from "./model-studio/ModelSelector";
 import { VideoModelForm } from "./model-studio/VideoModelForm";
 import { ImageModelForm } from "./model-studio/ImageModelForm";
 import { ToonCrafterForm } from "./model-studio/ToonCrafterForm";
 import { PikaframesForm } from "./model-studio/PikaframesForm";
 import { WanForm } from "./model-studio/WanForm";
+import { GrokImagineEditForm } from "./model-studio/GrokImagineEditForm";
 import { ResultsDisplay } from "./model-studio/ResultsDisplay";
 import { HistoryPanel } from "./model-studio/HistoryPanel";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { isValidImageModel, type ImageModelId } from "@/lib/ai/imageModelConfig";
 import { isVideoModelId } from "@/lib/ai/soraConstraints";
 import {
@@ -110,6 +114,7 @@ export function ModelStudio() {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [storageLoaded, setStorageLoaded] = useState(false);
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
   useEffect(() => {
     const persisted = loadPersistedSettings();
@@ -202,13 +207,24 @@ export function ModelStudio() {
   const isToonCrafter = category === "video" && videoModelId === "tooncrafter";
   const isPikaframes = category === "video" && videoModelId === "pikaframes";
   const isWan = category === "video" && videoModelId === "wan2.2";
+  const isGrokImagineEdit =
+    category === "video" && videoModelId === "grok-imagine-edit";
 
   return (
     <div className="col-span-12 tech-border bg-card">
-      <div className="px-4 py-3 border-b border-border">
+      <div className="px-4 py-3 border-b border-border flex items-center justify-between">
         <span className="text-xs text-muted-foreground tracking-wider">
           MODEL STUDIO
         </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setIsHistoryOpen(true)}
+        >
+          <MediaImageList className="w-4 h-4" strokeWidth={1.5} />
+          View history
+        </Button>
       </div>
       <div className="p-4 grid grid-cols-12 gap-4">
         <div className="col-span-5 space-y-4">
@@ -240,6 +256,13 @@ export function ModelStudio() {
                 />
               ) : isWan ? (
                 <WanForm
+                  key={videoModelId}
+                  modelId={videoModelId}
+                  onSubmit={handleSubmit}
+                  isLoading={isLoading}
+                />
+              ) : isGrokImagineEdit ? (
+                <GrokImagineEditForm
                   key={videoModelId}
                   modelId={videoModelId}
                   onSubmit={handleSubmit}
@@ -278,9 +301,27 @@ export function ModelStudio() {
 
         <div className="col-span-7 min-h-[300px] space-y-4">
           <ResultsDisplay results={results} isLoading={isLoading} />
-          <HistoryPanel refreshToken={historyRefreshToken} />
         </div>
       </div>
+
+      <Dialog open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
+        <DialogContent className="w-[min(1200px,calc(100%-2rem))] max-w-[1200px] max-h-[85vh] p-0 flex flex-col overflow-hidden">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+            <DialogTitle className="text-sm text-muted-foreground">
+              Model Studio History
+            </DialogTitle>
+          </div>
+          <div className="p-4 flex-1">
+            <HistoryPanel
+              refreshToken={historyRefreshToken}
+              defaultOpen
+              showToggle={false}
+              className="border-0"
+              listClassName="max-h-[70vh]"
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
