@@ -140,7 +140,7 @@ export interface Animation {
   wanVideoQuality?: "low" | "medium" | "high" | "maximum";
   wanVideoWriteMode?: "fast" | "balanced" | "small";
   extractFps?: number;
-  loopMode?: "loop" | "pingpong";
+  loopMode?: "none" | "loop" | "pingpong";
   sheetColumns?: number;
   generationJob?: GenerationJob;
   generationQueue?: GenerationQueueItem[];

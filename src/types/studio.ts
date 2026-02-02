@@ -81,12 +81,19 @@ export type WanParameters = {
   videoWriteMode?: "fast" | "balanced" | "small";
 };
 
+export type GrokImagineEditParameters = {
+  prompt: string;
+  video: string;
+  resolution?: "auto" | "480p" | "720p";
+};
+
 export type StudioParameters =
   | StudioVideoParameters
   | PikaframesParameters
   | ToonCrafterParameters
   | StudioImageParameters
-  | WanParameters;
+  | WanParameters
+  | GrokImagineEditParameters;
 
 export type StudioHistoryEntry = {
   id: string;
