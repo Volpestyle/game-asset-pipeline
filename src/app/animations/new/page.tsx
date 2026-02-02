@@ -26,6 +26,7 @@ import {
   isSizeValidForModel,
   getExpectedFrameCount,
 } from "@/components/animation";
+import type { LoopMode } from "@/lib/frameUtils";
 
 const STYLE_OPTIONS: { value: AnimationStyle; label: string; code: string }[] = [
   { value: "idle", label: "Idle", code: "IDL" },
@@ -36,7 +37,8 @@ const STYLE_OPTIONS: { value: AnimationStyle; label: string; code: string }[] = 
   { value: "custom", label: "Custom", code: "CST" },
 ];
 
-const LOOP_OPTIONS: { value: "pingpong" | "loop"; label: string }[] = [
+const LOOP_OPTIONS: { value: LoopMode; label: string }[] = [
+  { value: "none", label: "No loop (straight playback)" },
   { value: "pingpong", label: "Ping-pong (safe loop)" },
   { value: "loop", label: "Loop (end frame = start frame)" },
 ];
@@ -89,7 +91,7 @@ const NewAnimationForm = () => {
   const [draftPromptConcise, setDraftPromptConcise] = useState("");
   const [draftPromptVerbose, setDraftPromptVerbose] = useState("");
   const [extractFps, setExtractFps] = useState(12);
-  const [loopMode, setLoopMode] = useState<"pingpong" | "loop">("loop");
+  const [loopMode, setLoopMode] = useState<LoopMode>("loop");
   const [sheetColumns, setSheetColumns] = useState(6);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,6 +111,12 @@ const NewAnimationForm = () => {
     loopMode === "pingpong"
       ? Math.max(1, expectedFrameCount * 2 - 2)
       : expectedFrameCount;
+  const loopOutputLabel =
+    loopMode === "pingpong"
+      ? `Ping-pong output: ${loopedFrameCount} frames`
+      : loopMode === "none"
+      ? `No loop output: ${loopedFrameCount} frames`
+      : `Loop output: ${loopedFrameCount} frames (end frame = start frame)`;
   const supportsNegativePrompt = getVideoModelSupportsNegativePrompt(generationModel);
   const isToonCrafter = generationModel === "tooncrafter";
   const isPikaframes = generationModel === "pikaframes";
@@ -124,8 +132,15 @@ const NewAnimationForm = () => {
         artStyle: selectedCharacter?.style ?? "pixel-art",
         bgKeyColor: selectedCharacter?.workingSpec?.bgKeyColor,
         promptProfile: "concise",
+        loopMode,
       }),
-    [description, style, selectedCharacter?.style, selectedCharacter?.workingSpec?.bgKeyColor]
+    [
+      description,
+      style,
+      selectedCharacter?.style,
+      selectedCharacter?.workingSpec?.bgKeyColor,
+      loopMode,
+    ]
   );
   const autoPromptVerbose = useMemo(
     () =>
@@ -135,8 +150,15 @@ const NewAnimationForm = () => {
         artStyle: selectedCharacter?.style ?? "pixel-art",
         bgKeyColor: selectedCharacter?.workingSpec?.bgKeyColor,
         promptProfile: "verbose",
+        loopMode,
       }),
-    [description, style, selectedCharacter?.style, selectedCharacter?.workingSpec?.bgKeyColor]
+    [
+      description,
+      style,
+      selectedCharacter?.style,
+      selectedCharacter?.workingSpec?.bgKeyColor,
+      loopMode,
+    ]
   );
   const effectivePromptConcise = promptConcise.trim()
     ? promptConcise
@@ -217,6 +239,7 @@ const NewAnimationForm = () => {
 
     setIsCreating(true);
     setError(null);
+    const resolvedGenerationLoop = loopMode === "none" ? false : generationLoop;
 
     try {
       const response = await fetch("/api/animations", {
@@ -237,7 +260,7 @@ const NewAnimationForm = () => {
             : null,
           generationSeconds,
           generationSize,
-          generationLoop,
+          generationLoop: resolvedGenerationLoop,
           tooncrafterInterpolate,
           tooncrafterColorCorrection,
           tooncrafterNegativePrompt: tooncrafterNegativePrompt.trim()
@@ -320,7 +343,7 @@ const NewAnimationForm = () => {
                   <span>{expectedFrameCount} base</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Looped</span>
+                  <span className="text-muted-foreground">Output</span>
                   <span>{loopedFrameCount} frames</span>
                 </div>
               </div>
@@ -671,9 +694,15 @@ const NewAnimationForm = () => {
                     checked={generationLoop}
                     onChange={(event) => setGenerationLoop(event.target.checked)}
                     className="form-checkbox"
+                    disabled={loopMode === "none"}
                   />
                   Loop output
                 </label>
+                {loopMode === "none" && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Loop output is disabled when Loop Mode is set to No loop.
+                  </p>
+                )}
                 <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
                   <input
                     type="checkbox"
@@ -757,7 +786,12 @@ const NewAnimationForm = () => {
                 {LOOP_OPTIONS.map((option) => (
                   <button
                     key={option.value}
-                    onClick={() => setLoopMode(option.value)}
+                    onClick={() => {
+                      setLoopMode(option.value);
+                      if (option.value === "none") {
+                        setGenerationLoop(false);
+                      }
+                    }}
                     className={`px-3 py-1 text-xs border text-left ${
                       loopMode === option.value
                         ? "border-primary text-primary"
@@ -793,9 +827,7 @@ const NewAnimationForm = () => {
                 {expectedFrameCount}
               </div>
               <p className="text-[10px] text-muted-foreground">
-                {loopMode === "pingpong"
-                  ? `Ping-pong output: ${loopedFrameCount} frames`
-                  : `Loop output: ${loopedFrameCount} frames (end frame = start frame)`}
+                {loopOutputLabel}
               </p>
             </div>
             <div className="tech-border bg-card p-4 space-y-2">

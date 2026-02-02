@@ -8,8 +8,6 @@ import {
 
 export const EXTRACT_FPS_OPTIONS = [6, 8, 12, 24];
 
-export type LoopMode = "loop" | "pingpong";
-
 export function getExpectedFrameCount(seconds: number, fps: number): number {
   if (!Number.isFinite(seconds) || !Number.isFinite(fps)) return 0;
   return Math.max(1, Math.round(seconds * fps));

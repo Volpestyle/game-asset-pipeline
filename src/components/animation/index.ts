@@ -34,6 +34,7 @@ export {
   getVideoModelSupportsConcepts,
   getVideoModelConceptOptions,
   getVideoModelSupportsEffect,
+  getVideoModelRequiresVideoInput,
   getVideoAspectRatio,
   getVideoResolution,
 } from "@/lib/ai/soraConstraints";

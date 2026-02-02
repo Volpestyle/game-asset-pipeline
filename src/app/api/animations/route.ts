@@ -159,6 +159,11 @@ export async function POST(request: Request) {
     requestedPromptProfile === "concise" || requestedPromptProfile === "verbose"
       ? requestedPromptProfile
       : getVideoModelPromptProfile(resolvedModel);
+  const loopModeValue = typeof loopMode === "string" ? loopMode : "";
+  const resolvedLoopMode =
+    loopModeValue === "none" || loopModeValue === "pingpong"
+      ? loopModeValue
+      : "loop";
   const resolvedNegativePrompt =
     typeof tooncrafterNegativePrompt === "string"
       ? tooncrafterNegativePrompt.trim()
@@ -175,6 +180,7 @@ export async function POST(request: Request) {
     artStyle,
     bgKeyColor: bgKeyColor || undefined,
     promptProfile: "concise",
+    loopMode: resolvedLoopMode,
   });
   const autoPromptVerbose = buildVideoPrompt({
     description: String(description ?? ""),
@@ -182,6 +188,7 @@ export async function POST(request: Request) {
     artStyle,
     bgKeyColor: bgKeyColor || undefined,
     promptProfile: "verbose",
+    loopMode: resolvedLoopMode,
   });
   const requestedConcise = typeof promptConcise === "string" ? promptConcise : "";
   const requestedVerbose = typeof promptVerbose === "string" ? promptVerbose : "";
@@ -207,7 +214,7 @@ export async function POST(request: Request) {
     promptVerbose: resolvedPromptVerbose,
     generationSeconds: resolvedSeconds,
     generationSize: resolvedSize,
-    generationLoop: generationLoop === true,
+    generationLoop: generationLoop === true && resolvedLoopMode !== "none",
     generationStartImageUrl: null,
     generationEndImageUrl: null,
     generationContinuationEnabled: resolvedContinuationEnabled,
@@ -227,7 +234,7 @@ export async function POST(request: Request) {
     tooncrafterNegativePrompt: resolvedNegativePrompt ? resolvedNegativePrompt : null,
     tooncrafterEmptyPrompt: tooncrafterEmptyPrompt === true,
     extractFps: resolvedExtractFps,
-    loopMode: (loopMode ?? "loop") === "pingpong" ? "pingpong" : "loop",
+    loopMode: resolvedLoopMode,
     sheetColumns: resolvedColumns,
     keyframes,
     generatedFrames: [],

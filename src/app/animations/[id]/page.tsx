@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout";
 import { buildVideoPrompt } from "@/lib/ai/promptBuilder";
 import { buildPikaframesPlan } from "@/lib/ai/pikaframes";
+import type { LoopMode } from "@/lib/frameUtils";
 import {
   TimelineEditor,
   FramePreview,
@@ -33,6 +34,7 @@ import {
   getVideoModelConceptOptions,
   getVideoModelSupportsEffect,
   getVideoModelSupportsAudio,
+  getVideoModelRequiresVideoInput,
   getVideoAspectRatio,
   getVideoSizeOptions,
 } from "@/components/animation";
@@ -59,6 +61,12 @@ const STYLE_OPTIONS: { value: AnimationStyle; label: string; code: string }[] = 
   { value: "attack", label: "Attack", code: "ATK" },
   { value: "jump", label: "Jump", code: "JMP" },
   { value: "custom", label: "Custom", code: "CST" },
+];
+
+const LOOP_OPTIONS: { value: LoopMode; label: string }[] = [
+  { value: "none", label: "No loop (straight playback)" },
+  { value: "pingpong", label: "Ping-pong (safe loop)" },
+  { value: "loop", label: "Loop (end frame = start frame)" },
 ];
 
 const PROMPT_PROFILE_OPTIONS: { value: PromptProfile; label: string }[] = [
@@ -194,12 +202,14 @@ export default function AnimationDetailPage() {
     const style = String(animation?.style ?? "");
     const artStyle = character?.style ?? "pixel-art";
     const bgKeyColor = character?.workingSpec?.bgKeyColor;
+    const loopMode = animation?.loopMode ?? "loop";
     const autoConcise = buildVideoPrompt({
       description,
       style,
       artStyle,
       bgKeyColor,
       promptProfile: "concise",
+      loopMode,
     });
     const autoVerbose = buildVideoPrompt({
       description,
@@ -207,6 +217,7 @@ export default function AnimationDetailPage() {
       artStyle,
       bgKeyColor,
       promptProfile: "verbose",
+      loopMode,
     });
     const effectiveConcise =
       animation?.promptConcise?.trim() ? animation.promptConcise : autoConcise;
@@ -215,6 +226,17 @@ export default function AnimationDetailPage() {
     setDraftPromptConcise(effectiveConcise);
     setDraftPromptVerbose(effectiveVerbose);
   }, [animation, character, isPromptEditing]);
+
+  const generationModel = String(animation?.generationModel ?? "sora-2");
+  const supportsReferenceImages =
+    getVideoModelSupportsReferenceImages(generationModel);
+  const referenceConstraints =
+    getVideoModelReferenceConstraints(generationModel);
+  const generationReferenceImageUrls = Array.isArray(
+    animation?.generationReferenceImageUrls
+  )
+    ? animation.generationReferenceImageUrls
+    : [];
 
   useEffect(() => {
     if (!animation) return;
@@ -274,13 +296,17 @@ export default function AnimationDetailPage() {
     setIsSaving(true);
     setMessage(null);
     setError(null);
+    const payload =
+      animation.loopMode === "none" && animation.generationLoop === true
+        ? { ...animation, generationLoop: false }
+        : animation;
     try {
       const data = await requestJson<{ animation: Animation }>(
         `/api/animations/${animationId}`,
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(animation),
+          body: JSON.stringify(payload),
           errorMessage: "Failed to save.",
         }
       );
@@ -320,6 +346,22 @@ export default function AnimationDetailPage() {
       );
       return;
     }
+    if (getVideoModelRequiresVideoInput(currentModel)) {
+      const continuationUrl =
+        typeof animation.generationContinuationVideoUrl === "string"
+          ? animation.generationContinuationVideoUrl.trim()
+          : "";
+      const sourceVideoUrl =
+        typeof animation.sourceVideoUrl === "string"
+          ? animation.sourceVideoUrl.trim()
+          : "";
+      if (!continuationUrl && !sourceVideoUrl) {
+        setError(
+          "Upload an input video or generate a video before running an edit model."
+        );
+        return;
+      }
+    }
     if (providerValue === "vertex") {
       if (animation.generationContinuationEnabled !== true) {
         setError("Enable continuation before running Vertex generation.");
@@ -340,6 +382,10 @@ export default function AnimationDetailPage() {
     const sizeValid = isSizeValidForModel(currentSize, currentModel);
     let adjustedSize: string | null = null;
     let nextAnimation = { ...animation };
+
+    if (nextAnimation.loopMode === "none" && nextAnimation.generationLoop === true) {
+      nextAnimation = { ...nextAnimation, generationLoop: false };
+    }
 
     if (!sizeValid) {
       adjustedSize = coerceVideoSizeForModel(currentSize, currentModel);
@@ -992,7 +1038,6 @@ export default function AnimationDetailPage() {
     return JSON.stringify(animation) !== JSON.stringify(savedAnimation);
   }, [animation, savedAnimation]);
 
-  const generationModel = String(animation?.generationModel ?? "sora-2");
   const expectedFrameCount = getExpectedFrameCount(
     Number(animation?.generationSeconds ?? 4),
     Number(animation?.extractFps ?? animation?.fps ?? 12)
@@ -1002,35 +1047,31 @@ export default function AnimationDetailPage() {
   const supportsLoop = getVideoModelSupportsLoop(generationModel);
   const supportsNegativePrompt = getVideoModelSupportsNegativePrompt(generationModel);
   const supportsSeed = getVideoModelSupportsSeed(generationModel);
-  const supportsReferenceImages =
-    getVideoModelSupportsReferenceImages(generationModel);
   const referenceImageLimit = getVideoModelReferenceImageLimit(generationModel);
-  const referenceConstraints =
-    getVideoModelReferenceConstraints(generationModel);
   const supportsConcepts = getVideoModelSupportsConcepts(generationModel);
   const conceptOptions = getVideoModelConceptOptions(generationModel);
   const supportsEffect = getVideoModelSupportsEffect(generationModel);
   const supportsAudio = getVideoModelSupportsAudio(generationModel);
+  const requiresVideoInput = getVideoModelRequiresVideoInput(generationModel);
   const continuationEnabled = animation?.generationContinuationEnabled === true;
   const isToonCrafter = generationModel === "tooncrafter";
   const isPikaframes = generationModel === "pikaframes";
   const isWan = generationModel === "wan2.2";
+  const isGrokImagineEdit = generationModel === "grok-imagine-edit";
   const isVertexProvider = selectedProvider === "vertex";
   const continuationVideoUrl =
     typeof animation?.generationContinuationVideoUrl === "string"
       ? animation.generationContinuationVideoUrl
       : "";
+  const sourceVideoUrl =
+    typeof animation?.sourceVideoUrl === "string" ? animation.sourceVideoUrl : "";
+  const editInputVideoUrl = continuationVideoUrl || sourceVideoUrl;
   const generationNegativePrompt =
     typeof animation?.generationNegativePrompt === "string"
       ? animation.generationNegativePrompt
       : "";
   const generationSeed =
     typeof animation?.generationSeed === "number" ? animation.generationSeed : "";
-  const generationReferenceImageUrls = Array.isArray(
-    animation?.generationReferenceImageUrls
-  )
-    ? animation.generationReferenceImageUrls
-    : [];
   const generationConcepts = Array.isArray(animation?.generationConcepts)
     ? animation.generationConcepts
     : [];
@@ -1053,6 +1094,7 @@ export default function AnimationDetailPage() {
     isToonCrafter,
     isPikaframes,
     isWan,
+    isVideoEdit: requiresVideoInput,
   });
   const pikaframesPlan = useMemo(() => {
     if (!animation || !isPikaframes) return null;
@@ -1081,10 +1123,20 @@ export default function AnimationDetailPage() {
 
   const displayFrameWidth = Number(animation.frameWidth ?? animation.spriteSize ?? 0);
   const displayFrameHeight = Number(animation.frameHeight ?? animation.spriteSize ?? 0);
+  const resolvedLoopMode: LoopMode = animation.loopMode ?? "loop";
   const loopedFrameCount =
-    String(animation.loopMode ?? "pingpong") === "pingpong"
+    resolvedLoopMode === "pingpong"
       ? Math.max(1, expectedFrameCount * 2 - 2)
       : expectedFrameCount;
+  const loopOutputLabel =
+    resolvedLoopMode === "pingpong"
+      ? `Ping-pong output: ${loopedFrameCount} frames.`
+      : resolvedLoopMode === "none"
+      ? `No loop output: ${loopedFrameCount} frames.`
+      : `Loop output: ${loopedFrameCount} frames (end frame = start frame).`;
+  const loopModeLabel =
+    LOOP_OPTIONS.find((option) => option.value === resolvedLoopMode)?.label ??
+    resolvedLoopMode;
   const generatedCount =
     animation.generatedFrames && animation.generatedFrames.length > 0
       ? animation.generatedFrames.length
@@ -1102,7 +1154,8 @@ export default function AnimationDetailPage() {
   const providerValid = selectedProvider !== "";
   const providerMatchesModel =
     providerValid && Boolean(modelProvider) && modelProvider === selectedProvider;
-  const generationLoop = Boolean(animation.generationLoop);
+  const generationLoop =
+    resolvedLoopMode === "none" ? false : Boolean(animation.generationLoop);
   const referenceImagesActive =
     supportsReferenceImages && generationReferenceImageUrls.length > 0;
   const endImageDisabled = generationLoop || referenceImagesActive || effectActive;
@@ -1144,6 +1197,7 @@ export default function AnimationDetailPage() {
     artStyle: character?.style ?? "pixel-art",
     bgKeyColor: character?.workingSpec?.bgKeyColor,
     promptProfile: "concise",
+    loopMode: resolvedLoopMode,
   });
   const autoPromptVerbose = buildVideoPrompt({
     description: String(animation.description ?? ""),
@@ -1151,6 +1205,7 @@ export default function AnimationDetailPage() {
     artStyle: character?.style ?? "pixel-art",
     bgKeyColor: character?.workingSpec?.bgKeyColor,
     promptProfile: "verbose",
+    loopMode: resolvedLoopMode,
   });
   const effectivePromptConcise =
     animation.promptConcise?.trim() ? animation.promptConcise : autoPromptConcise;
@@ -1362,7 +1417,7 @@ export default function AnimationDetailPage() {
                 </div>
                 <div>
                   <span className="text-muted-foreground block mb-1">Loop Mode</span>
-                  <span className="font-medium capitalize">{animation.loopMode ?? "loop"}</span>
+                  <span className="font-medium">{loopModeLabel}</span>
                 </div>
               </div>
               <div className="px-4 pb-4">
@@ -1373,6 +1428,7 @@ export default function AnimationDetailPage() {
                     style: animation.style,
                     artStyle: character.style ?? "pixel-art",
                     promptProfile: animation.promptProfile ?? "verbose",
+                    loopMode: resolvedLoopMode,
                   }) : animation.description ?? "No prompt available"}
                 </div>
               </div>
@@ -2082,6 +2138,11 @@ export default function AnimationDetailPage() {
                     Uses the start/end frames panel. Intermediate timeline keyframes are ignored.
                   </p>
                 )}
+                {isGrokImagineEdit && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Edits an input video clip. Upload a clip below or use the latest generated video.
+                  </p>
+                )}
               </div>
 
               {isVertexProvider && (
@@ -2164,6 +2225,82 @@ export default function AnimationDetailPage() {
                 </div>
               )}
 
+              {requiresVideoInput && !isVertexProvider && (
+                <div className="tech-border bg-card p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground tracking-widest">
+                      Edit Input Video
+                    </p>
+                    <span
+                      className={`text-[10px] ${
+                        editInputVideoUrl ? "text-success" : "text-muted-foreground"
+                      }`}
+                    >
+                      {editInputVideoUrl ? "Ready" : "Missing"}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    Input is resized to a max of 854×480 and truncated to 8 seconds.
+                  </p>
+                  <div className="space-y-2">
+                    {editInputVideoUrl ? (
+                      <video
+                        src={editInputVideoUrl}
+                        controls
+                        className="w-full h-28 object-contain border border-border bg-muted/20"
+                      />
+                    ) : (
+                      <p className="text-[10px] text-muted-foreground">
+                        No input video selected yet.
+                      </p>
+                    )}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <input
+                        type="file"
+                        accept="video/mp4"
+                        className="text-[10px] text-muted-foreground"
+                        disabled={isContinuationVideoSaving}
+                        onChange={(e) =>
+                          void handleContinuationVideoUpload(
+                            e.target.files?.[0] ?? null
+                          )
+                        }
+                      />
+                      {sourceVideoUrl && (
+                        <button
+                          type="button"
+                          className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-primary hover:text-primary"
+                          disabled={isContinuationVideoSaving}
+                          onClick={() =>
+                            setAnimation({
+                              ...animation,
+                              generationContinuationVideoUrl: sourceVideoUrl,
+                            })
+                          }
+                        >
+                          Use latest generated
+                        </button>
+                      )}
+                      {continuationVideoUrl && (
+                        <button
+                          type="button"
+                          className="px-2 py-1 text-[10px] border border-border text-muted-foreground hover:border-destructive hover:text-destructive"
+                          disabled={isContinuationVideoSaving}
+                          onClick={() => void handleContinuationVideoClear()}
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    {!editInputVideoUrl && (
+                      <p className="text-[10px] text-destructive">
+                        Upload an MP4 clip or use the latest generated video.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="tech-border bg-card p-4 space-y-2">
                 <p className="text-xs text-muted-foreground tracking-widest">Prompt Profile</p>
                 <div className="flex flex-wrap gap-2">
@@ -2192,6 +2329,7 @@ export default function AnimationDetailPage() {
                   {durationOptions.map((value) => (
                     <button
                       key={value}
+                      disabled={requiresVideoInput}
                       onClick={() => {
                         const fpsValue = Number(animation.extractFps ?? animation.fps ?? 12);
                         const frameCount = getExpectedFrameCount(value, fpsValue);
@@ -2205,12 +2343,17 @@ export default function AnimationDetailPage() {
                         Number(animation.generationSeconds ?? 4) === value
                           ? "border-primary text-primary"
                           : "border-border text-muted-foreground hover:border-primary/50"
-                      }`}
+                      } ${requiresVideoInput ? "opacity-50 cursor-not-allowed" : ""}`}
                     >
                       {value}s
                     </button>
                   ))}
                 </div>
+                {requiresVideoInput && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Duration is derived from the input video.
+                  </p>
+                )}
               </div>
 
               {isToonCrafter && (
@@ -2688,7 +2831,7 @@ export default function AnimationDetailPage() {
                 </div>
               )}
 
-              {!isToonCrafter && !isPikaframes && (
+              {!isToonCrafter && !isPikaframes && !requiresVideoInput && (
                 <div className="tech-border bg-card p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <p className="text-xs text-muted-foreground tracking-widest">
@@ -2716,10 +2859,15 @@ export default function AnimationDetailPage() {
                         checked={generationLoop}
                         onChange={(e) => void handleGenerationLoopToggle(e.target.checked)}
                         className="form-checkbox"
-                        disabled={isGenerationFrameSaving}
+                        disabled={isGenerationFrameSaving || resolvedLoopMode === "none"}
                       />
                       Match first/last frame (loop)
                     </label>
+                    {resolvedLoopMode === "none" && (
+                      <p className="text-[10px] text-muted-foreground">
+                        Loop output is disabled when Loop Mode is set to No loop.
+                      </p>
+                    )}
                     {!supportsLoop && generationLoop && (
                       <p className="text-[10px] text-muted-foreground">
                         This model doesn’t support a loop flag; end frame will reuse the start frame.
@@ -2898,24 +3046,27 @@ export default function AnimationDetailPage() {
               <div className="tech-border bg-card p-4 space-y-2">
                 <p className="text-xs text-muted-foreground tracking-widest">Loop Mode</p>
                 <div className="flex flex-col gap-2">
-                  {["pingpong", "loop"].map((mode) => (
+                  {LOOP_OPTIONS.map((option) => (
                     <button
-                      key={mode}
-                      onClick={() =>
+                      key={option.value}
+                      onClick={() => {
+                        const nextLoopMode = option.value;
                         setAnimation({
                           ...animation,
-                          loopMode: mode as "pingpong" | "loop",
-                        })
-                      }
+                          loopMode: nextLoopMode,
+                          generationLoop:
+                            nextLoopMode === "none"
+                              ? false
+                              : animation.generationLoop,
+                        });
+                      }}
                       className={`px-3 py-1 text-xs border text-left ${
-                        String(animation.loopMode ?? "pingpong") === mode
+                        resolvedLoopMode === option.value
                           ? "border-primary text-primary"
                           : "border-border text-muted-foreground hover:border-primary/50"
                       }`}
                     >
-                      {mode === "pingpong"
-                        ? "Ping-pong (safe loop)"
-                        : "Loop (end frame = start frame)"}
+                      {option.label}
                     </button>
                   ))}
                 </div>
@@ -3040,11 +3191,11 @@ export default function AnimationDetailPage() {
                 </div>
                 <p className="text-2xl font-bold metric-value">{expectedFrameCount}</p>
                 <p className="text-[10px] text-muted-foreground leading-relaxed">
-                  Base frames come from {animation.generationSeconds ?? 4}s ×{" "}
-                  {animation.extractFps ?? animation.fps ?? 12}fps.{" "}
-                  {String(animation.loopMode ?? "loop") === "pingpong"
-                    ? `Ping-pong output: ${loopedFrameCount} frames.`
-                    : `Loop output: ${loopedFrameCount} frames (end frame = start frame).`}
+                  {requiresVideoInput
+                    ? "Frame count is derived from the edited input video."
+                    : `Base frames come from ${animation.generationSeconds ?? 4}s × ${
+                        animation.extractFps ?? animation.fps ?? 12
+                      }fps. ${loopOutputLabel}`}
                 </p>
               </div>
 

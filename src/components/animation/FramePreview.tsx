@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Move } from "lucide-react";
 import type { Animation } from "@/types";
 import { Button } from "@/components/ui/button";
+import { logger } from "@/lib/logger";
 import {
   Dialog,
   DialogContent,
@@ -210,6 +211,11 @@ export function FramePreview({
   const modalContainerRef = useRef<HTMLDivElement>(null);
   const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [spritesheetSize, setSpritesheetSize] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+  const [layoutMismatchLogged, setLayoutMismatchLogged] = useState<string | null>(null);
   const [zoomOverride, setZoomOverride] = useState<number | null>(null);
   const [modalZoomOverride, setModalZoomOverride] = useState<number | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -243,10 +249,12 @@ export function FramePreview({
     currentFrame === 0 ? startOverride ?? referenceImageUrl ?? undefined : undefined;
   const resolvedFrameUrl = generatedFrame?.url ?? keyframe?.image ?? fallbackFrameUrl;
   const layout = animation.spritesheetLayout;
-  const frameWidth =
-    layout?.frameWidth ?? layout?.frameSize ?? animation.frameWidth ?? animation.spriteSize;
-  const frameHeight =
-    layout?.frameHeight ?? layout?.frameSize ?? animation.frameHeight ?? animation.spriteSize;
+  const baseFrameWidth = Number(
+    layout?.frameWidth ?? layout?.frameSize ?? animation.frameWidth ?? animation.spriteSize ?? 0
+  );
+  const baseFrameHeight = Number(
+    layout?.frameHeight ?? layout?.frameSize ?? animation.frameHeight ?? animation.spriteSize ?? 0
+  );
   const generatedCount =
     animation.generatedFrames && animation.generatedFrames.length > 0
       ? animation.generatedFrames.length
@@ -257,7 +265,22 @@ export function FramePreview({
   const columns =
     layout?.columns && layout.columns > 0
       ? layout.columns
-      : Math.max(1, Math.ceil(Math.sqrt(safeFrameCount)));
+      : Math.max(1, Number(animation.sheetColumns ?? Math.ceil(Math.sqrt(safeFrameCount))));
+  const derivedLayout = useMemo(() => {
+    if (!spritesheetUrl || !spritesheetSize) return null;
+    if (!columns || !safeFrameCount) return null;
+    const rows = Math.max(1, Math.ceil(safeFrameCount / columns));
+    if (!rows) return null;
+    if (spritesheetSize.width % columns !== 0) return null;
+    if (spritesheetSize.height % rows !== 0) return null;
+    const frameWidth = Math.floor(spritesheetSize.width / columns);
+    const frameHeight = Math.floor(spritesheetSize.height / rows);
+    if (!frameWidth || !frameHeight) return null;
+    return { frameWidth, frameHeight, rows };
+  }, [spritesheetUrl, spritesheetSize, columns, safeFrameCount]);
+
+  const frameWidth = derivedLayout?.frameWidth ?? baseFrameWidth;
+  const frameHeight = derivedLayout?.frameHeight ?? baseFrameHeight;
 
   // Calculate fit zoom to contain the frame within the preview container
   const fitZoom = useMemo(() => {
@@ -300,6 +323,39 @@ export function FramePreview({
   const isLoaded = !!spritesheetUrl && loadedUrl === spritesheetUrl && !loadError;
   const error = loadedUrl === spritesheetUrl ? loadError : null;
 
+  useEffect(() => {
+    setSpritesheetSize(null);
+    setLayoutMismatchLogged(null);
+  }, [spritesheetUrl]);
+
+  useEffect(() => {
+    if (!spritesheetUrl || !derivedLayout) return;
+    if (!baseFrameWidth || !baseFrameHeight) return;
+    const mismatch =
+      derivedLayout.frameWidth !== baseFrameWidth ||
+      derivedLayout.frameHeight !== baseFrameHeight;
+    if (!mismatch) return;
+    if (layoutMismatchLogged === spritesheetUrl) return;
+    setLayoutMismatchLogged(spritesheetUrl);
+    logger.warn("Frame preview: spritesheet layout mismatch, using derived dimensions", {
+      spritesheetUrl,
+      frameWidth: baseFrameWidth,
+      frameHeight: baseFrameHeight,
+      derivedFrameWidth: derivedLayout.frameWidth,
+      derivedFrameHeight: derivedLayout.frameHeight,
+      columns,
+      frameCount: safeFrameCount,
+    });
+  }, [
+    spritesheetUrl,
+    derivedLayout,
+    baseFrameWidth,
+    baseFrameHeight,
+    layoutMismatchLogged,
+    columns,
+    safeFrameCount,
+  ]);
+
   const resolvedPanOffset = useMemo(
     () =>
       panOffset.frame === currentFrame
@@ -318,6 +374,7 @@ export function FramePreview({
   const drawFrame = useCallback(
     (canvas: HTMLCanvasElement | null, currentZoom: number, _offset: { x: number; y: number }) => {
       if (!canvas || !spritesheetUrl || !isLoaded) return;
+      if (!frameWidth || !frameHeight) return;
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
@@ -498,8 +555,9 @@ export function FramePreview({
             </div>
           </div>
 
-          <div className={`flex ${showComparison && keyframe?.image ? "gap-4" : ""}`}>
-            <div className="flex-1 flex flex-col items-center">
+          <div className="flex flex-col gap-3">
+            {/* Generated/Preview frame - always shown */}
+            <div className="flex flex-col items-center">
               <FrameCanvas
                 spritesheetUrl={spritesheetUrl ?? undefined}
                 isLoaded={isLoaded}
@@ -522,8 +580,9 @@ export function FramePreview({
               </div>
             </div>
 
+            {/* Keyframe reference - stacked below when present */}
             {showComparison && keyframe?.image && (
-              <div className="flex-1 flex flex-col items-center">
+              <div className="flex flex-col items-center pt-3 border-t border-border/50">
                 <div className="text-[10px] text-muted-foreground mb-2 tracking-wider">
                   KEYFRAME REF
                 </div>
@@ -610,13 +669,19 @@ export function FramePreview({
             src={spritesheetUrl}
             alt="spritesheet"
             className="hidden"
-            onLoad={() => {
+            onLoad={(event) => {
               setLoadedUrl(spritesheetUrl);
               setLoadError(null);
+              const target = event.currentTarget;
+              setSpritesheetSize({
+                width: target.naturalWidth || 0,
+                height: target.naturalHeight || 0,
+              });
             }}
             onError={() => {
               setLoadedUrl(spritesheetUrl);
               setLoadError("Failed to load spritesheet");
+              setSpritesheetSize(null);
             }}
           />
         )}

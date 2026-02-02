@@ -18,6 +18,7 @@ type GenerationPlanOptions = {
   isToonCrafter: boolean;
   isPikaframes: boolean;
   isWan: boolean;
+  isVideoEdit: boolean;
 };
 
 export function useGenerationPlan(options: GenerationPlanOptions): GenerationPlan {
@@ -30,6 +31,7 @@ export function useGenerationPlan(options: GenerationPlanOptions): GenerationPla
     isToonCrafter,
     isPikaframes,
     isWan,
+    isVideoEdit,
   } = options;
 
   return useMemo(() => {
@@ -49,6 +51,34 @@ export function useGenerationPlan(options: GenerationPlanOptions): GenerationPla
         errors: plan.errors,
         warnings: plan.warnings,
       };
+    }
+
+    if (isVideoEdit) {
+      const errors: string[] = [];
+      const warnings: string[] = [];
+      const inputVideoUrl =
+        typeof animation.generationContinuationVideoUrl === "string" &&
+        animation.generationContinuationVideoUrl.trim().length > 0
+          ? animation.generationContinuationVideoUrl
+          : typeof animation.sourceVideoUrl === "string" &&
+            animation.sourceVideoUrl.trim().length > 0
+          ? animation.sourceVideoUrl
+          : "";
+      if (!inputVideoUrl) {
+        errors.push(
+          "Grok Imagine Edit requires an input video. Upload a clip or generate a video first."
+        );
+      }
+      const keyframes = Array.isArray(animation.keyframes)
+        ? animation.keyframes
+        : [];
+      const keyframesWithImages = keyframes.filter(
+        (kf) => typeof kf.image === "string" && kf.image.trim().length > 0
+      );
+      if (keyframesWithImages.length > 0) {
+        warnings.push("Video edits ignore timeline keyframes.");
+      }
+      return { mode: "single", segments: [], errors, warnings };
     }
 
     if (isWan) {
@@ -306,5 +336,6 @@ export function useGenerationPlan(options: GenerationPlanOptions): GenerationPla
     isToonCrafter,
     isPikaframes,
     isWan,
+    isVideoEdit,
   ]);
 }

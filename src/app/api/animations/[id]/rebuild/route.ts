@@ -3,7 +3,8 @@ import path from "path";
 import sharp from "sharp";
 import { removeBackgroundFromFramesDir } from "@/lib/backgroundRemoval";
 import { buildGeneratedFramesFromSequence } from "@/lib/frameOps";
-import { buildSpritesheetLayout, sortFrameFiles } from "@/lib/frameUtils";
+import { resolveSpritesheetLayoutForFrames } from "@/lib/frameSizing";
+import { sortFrameFiles } from "@/lib/frameUtils";
 import { composeSpritesheet } from "@/lib/spritesheet";
 import { logger } from "@/lib/logger";
 import { fileExists, readJson, storagePath, writeJson } from "@/lib/storage";
@@ -26,8 +27,16 @@ export async function POST(
   const animation = await readJson<Record<string, unknown>>(animationPath);
   const applyBackgroundRemoval = payload?.applyBackgroundRemoval === true;
 
-  const loopModeInput = String(payload?.loopMode ?? animation.loopMode ?? "loop");
-  const loopMode = loopModeInput === "pingpong" ? "pingpong" : "loop";
+  const loopModeInput =
+    typeof payload?.loopMode === "string"
+      ? payload.loopMode
+      : typeof animation.loopMode === "string"
+      ? animation.loopMode
+      : "loop";
+  const loopMode =
+    loopModeInput === "none" || loopModeInput === "pingpong"
+      ? loopModeInput
+      : "loop";
   const sheetColumns = Math.max(1, Number(payload?.sheetColumns ?? animation.sheetColumns ?? 6));
 
   const rawFramesDir = storagePath("animations", id, "generated", "frames_raw");
@@ -91,12 +100,18 @@ export async function POST(
     }
   }
 
-  const layout = buildSpritesheetLayout({
-    frameWidth,
-    frameHeight,
+  const sizing = await resolveSpritesheetLayoutForFrames({
+    framesDir,
+    fallbackFrameWidth: frameWidth,
+    fallbackFrameHeight: frameHeight,
     columns: sheetColumns,
     frameCount: generatedFrames.length,
+    animationId: id,
+    context: "rebuild",
   });
+  frameWidth = sizing.frameWidth;
+  frameHeight = sizing.frameHeight;
+  const layout = sizing.layout;
 
   const spritesheetName = `spritesheet_${Date.now()}_rebuild.png`;
   const spritesheetPath = storagePath("animations", id, "generated", spritesheetName);
@@ -114,8 +129,8 @@ export async function POST(
     generatedSpritesheet: `/api/storage/animations/${id}/generated/${spritesheetName}`,
     spritesheetLayout: layout,
     generationNote: applyBackgroundRemoval
-      ? `Rebuilt spritesheet (${loopMode}) with background removal.`
-      : `Rebuilt spritesheet (${loopMode}).`,
+      ? `Rebuilt spritesheet (${loopMode === "none" ? "no loop" : loopMode}) with background removal.`
+      : `Rebuilt spritesheet (${loopMode === "none" ? "no loop" : loopMode}).`,
     exports: undefined,
     updatedAt: new Date().toISOString(),
   };

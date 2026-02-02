@@ -4,7 +4,8 @@ import { coerceVideoSizeForModel, getDefaultVideoSize } from "@/lib/ai/soraConst
 import { createAnimationVersion } from "@/lib/animationVersions";
 import { DEFAULT_BG_KEY } from "@/lib/color";
 import { buildGeneratedFramesFromSequence } from "@/lib/frameOps";
-import { buildSpritesheetLayout, sortFrameFiles } from "@/lib/frameUtils";
+import { resolveSpritesheetLayoutForFrames } from "@/lib/frameSizing";
+import { sortFrameFiles } from "@/lib/frameUtils";
 import { logger } from "@/lib/logger";
 import { composeSpritesheet } from "@/lib/spritesheet";
 import { parseSize } from "@/lib/size";
@@ -93,8 +94,12 @@ export async function POST(
 
   const requestedFps = Number(animation.extractFps ?? animation.fps ?? 12);
   const extractFps = ALLOWED_FPS.includes(requestedFps) ? requestedFps : 12;
-  const loopModeInput = String(animation.loopMode ?? "loop");
-  const loopMode = loopModeInput === "pingpong" ? "pingpong" : "loop";
+  const loopModeInput =
+    typeof animation.loopMode === "string" ? animation.loopMode : "loop";
+  const loopMode =
+    loopModeInput === "none" || loopModeInput === "pingpong"
+      ? loopModeInput
+      : "loop";
   const sheetColumns = Math.max(1, Number(animation.sheetColumns ?? 6));
 
   const model = String(animation.generationModel ?? "sora-2");
@@ -201,12 +206,18 @@ export async function POST(
     return Response.json({ error: message }, { status: 500 });
   }
 
-  const layout = buildSpritesheetLayout({
-    frameWidth,
-    frameHeight,
+  const sizing = await resolveSpritesheetLayoutForFrames({
+    framesDir,
+    fallbackFrameWidth: frameWidth,
+    fallbackFrameHeight: frameHeight,
     columns: sheetColumns,
     frameCount: generatedFrames.length,
+    animationId: id,
+    context: "import-video",
   });
+  frameWidth = sizing.frameWidth;
+  frameHeight = sizing.frameHeight;
+  const layout = sizing.layout;
 
   const spritesheetName = `spritesheet_${Date.now()}_import.png`;
   const spritesheetPath = path.join(generatedDir, spritesheetName);

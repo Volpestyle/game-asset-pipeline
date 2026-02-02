@@ -40,6 +40,9 @@ export function ImportPanel({
 
   const displayFrameWidth = Number(animation.frameWidth ?? animation.spriteSize ?? 0);
   const displayFrameHeight = Number(animation.frameHeight ?? animation.spriteSize ?? 0);
+  const loopMode = animation.loopMode ?? "loop";
+  const loopLabel =
+    loopMode === "none" ? "No loop" : loopMode === "pingpong" ? "Ping-pong" : "Loop";
 
   const handleImportVideo = async () => {
     if (!importFile) return;
@@ -202,7 +205,7 @@ export function ImportPanel({
 
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
           <span>FPS: {animation.extractFps ?? animation.fps ?? 12}</span>
-          <span>Loop: {animation.loopMode ?? "pingpong"}</span>
+          <span>Loop: {loopLabel}</span>
           <span>
             Size: {displayFrameWidth}×{displayFrameHeight}
           </span>

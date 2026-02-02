@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import sharp from "sharp";
 import { runReplicateModel } from "@/lib/ai/replicate";
 import { bufferToDataUrl } from "@/lib/dataUrl";
+import { resolveSpritesheetLayoutForFrames } from "@/lib/frameSizing";
 import { logger } from "@/lib/logger";
 import { getShutdownSignal } from "@/lib/shutdown";
 import { composeSpritesheet, writeFrameImage } from "@/lib/spritesheet";
@@ -91,25 +92,6 @@ async function blendKeyframes(
   })
     .png()
     .toBuffer();
-}
-
-function buildLayout(
-  frameWidth: number,
-  frameHeight: number,
-  frameCount: number
-) {
-  const safeCount = Math.max(1, frameCount);
-  const columns = Math.max(1, Math.ceil(Math.sqrt(safeCount)));
-  const rows = Math.max(1, Math.ceil(safeCount / columns));
-  return {
-    frameSize: frameWidth === frameHeight ? frameWidth : undefined,
-    frameWidth,
-    frameHeight,
-    columns,
-    rows,
-    width: columns * frameWidth,
-    height: rows * frameHeight,
-  };
 }
 
 async function resolveFrameDimensions(
@@ -337,26 +319,82 @@ export async function POST(
       }
     }
 
-    const existingLayout = animation.spritesheetLayout;
-    const spritesheetLayout =
-      existingLayout &&
-      existingLayout.frameWidth === frameWidth &&
-      existingLayout.frameHeight === frameHeight
-        ? existingLayout
-        : buildLayout(frameWidth, frameHeight, totalFrames);
+    const frameCount = totalFrames > 0 ? totalFrames : framesMap.size;
+    const columns = Math.max(
+      1,
+      Number(
+        animation.sheetColumns ??
+          animation.spritesheetLayout?.columns ??
+          Math.ceil(Math.sqrt(Math.max(1, frameCount)))
+      )
+    );
+
+    let spritesheetLayout = animation.spritesheetLayout;
+    let resolvedFrameWidth = frameWidth;
+    let resolvedFrameHeight = frameHeight;
+    let candidateLayout = spritesheetLayout;
+    let candidateFrameWidth = resolvedFrameWidth;
+    let candidateFrameHeight = resolvedFrameHeight;
+
+    try {
+      const sizing = await resolveSpritesheetLayoutForFrames({
+        framesDir,
+        fallbackFrameWidth: frameWidth,
+        fallbackFrameHeight: frameHeight,
+        columns,
+        frameCount,
+        animationId: id,
+        context: "interpolate",
+      });
+      candidateLayout = sizing.layout;
+      candidateFrameWidth = sizing.frameWidth;
+      candidateFrameHeight = sizing.frameHeight;
+    } catch (error) {
+      logger.warn("Interpolation: failed to resolve spritesheet layout from frames", {
+        animationId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (!candidateLayout) {
+        const safeCount = Math.max(1, frameCount);
+        const rows = Math.max(1, Math.ceil(safeCount / columns));
+        candidateLayout = {
+          frameSize: frameWidth === frameHeight ? frameWidth : undefined,
+          frameWidth,
+          frameHeight,
+          columns,
+          rows,
+          width: columns * frameWidth,
+          height: rows * frameHeight,
+        };
+      }
+    }
+
     let generatedSpritesheet = animation.generatedSpritesheet;
     const recomposedName = `spritesheet_${Date.now()}_interpolated.png`;
     const recomposedPath = storagePath("animations", id, "generated", recomposedName);
+    let composed = false;
 
     try {
-      await composeSpritesheet({
-        framesDir,
-        outputPath: recomposedPath,
-        layout: spritesheetLayout,
+      if (candidateLayout) {
+        await composeSpritesheet({
+          framesDir,
+          outputPath: recomposedPath,
+          layout: candidateLayout,
+        });
+        generatedSpritesheet = `/api/storage/animations/${id}/generated/${recomposedName}`;
+        composed = true;
+      }
+    } catch (error) {
+      logger.warn("Interpolation: spritesheet recomposition failed", {
+        animationId: id,
+        error: error instanceof Error ? error.message : String(error),
       });
-      generatedSpritesheet = `/api/storage/animations/${id}/generated/${recomposedName}`;
-    } catch {
-      // Keep existing spritesheet if recomposition fails.
+    }
+
+    if (composed && candidateLayout) {
+      spritesheetLayout = candidateLayout;
+      resolvedFrameWidth = candidateFrameWidth;
+      resolvedFrameHeight = candidateFrameHeight;
     }
 
     const generatedFrames = Array.from(framesMap.values())
@@ -368,6 +406,8 @@ export async function POST(
       generatedFrames,
       spritesheetLayout,
       generatedSpritesheet,
+      frameWidth: resolvedFrameWidth,
+      frameHeight: resolvedFrameHeight,
       status: "complete",
       updatedAt: new Date().toISOString(),
     };
